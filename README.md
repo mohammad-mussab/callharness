@@ -16,6 +16,10 @@ OpenCall is the self-hosted alternative: send it your calls, and it gives you th
   - **Sentiment analysis** — label + score from -1.0 to 1.0
 - **Dashboard** — call volume, success rate, sentiment distribution, transfer rate, end-reason breakdown, 14-day trends, per-agent filtering
 - **Call explorer** — search transcripts, filter by outcome/sentiment, drill into any call with a synced audio player + turn-by-turn transcript with latency annotations
+- **Latency observability** — p50/p95/p99 response latency with per-turn STT / LLM / TTS component breakdowns; the Pipecat metrics observer captures these automatically
+- **Conversation-quality metrics** (no LLM needed) — interruptions, silence gaps, talk ratio, agent words-per-minute, monologue length, computed at ingest
+- **Alerting** — Slack or webhook notifications for negative-sentiment calls, failed calls, keyword mentions, high-latency calls, and windowed success-rate/sentiment drops, with cooldowns and a full event log
+- **Custom evaluators** — user-authored LLM-as-judge criteria graded on every call, with pass-rate tracking
 - **Self-hosted** — SQLite + local files by default, Postgres via Docker Compose; your call data never leaves your infrastructure
 
 ## Quickstart (local dev)
@@ -111,8 +115,7 @@ Next.js dashboard (overview · call explorer · settings)
 
 ## Roadmap
 
-- **Phase 2 — voice-specific depth**: OpenTelemetry trace ingestion (Pipecat/LiveKit emit OTel natively) with per-turn STT/LLM/TTS latency breakdowns and p50/p95/p99 dashboards; interruption/silence/talk-ratio metrics; alerting rules (Slack/webhook/email); custom LLM-as-judge evaluators
-- **Phase 3 — closing the loop**: analytics query API + custom dashboards; caller journey / drop-off analysis; failed-call → test-case pipeline; Vapi/Retell importers; S3 recording storage; multi-tenant auth
+- **Phase 3 — closing the loop**: analytics query API + custom dashboards; caller journey / drop-off analysis; failed-call → test-case pipeline; native OpenTelemetry (OTLP) trace ingestion for LiveKit agents; Vapi/Retell importers; S3 recording storage; email alert channel; multi-tenant auth
 
 ## License
 

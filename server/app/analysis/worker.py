@@ -13,9 +13,13 @@ from sqlalchemy.orm import selectinload
 from ..config import settings
 from ..db import SessionLocal
 from ..models import AnalysisConfig, Call, utcnow
+from .alerts import check_call_alerts, check_window_alerts
 from .engine import analyze_call
+from .evaluators import run_evaluators
 
 logger = logging.getLogger("opencall.worker")
+
+WINDOW_ALERT_INTERVAL_SECONDS = 60.0
 
 
 async def get_or_create_config(session) -> AnalysisConfig:
@@ -43,11 +47,31 @@ async def _process_one(call_id: str) -> None:
             call.analysis_error = None
             call.analyzed_at = utcnow()
             call.llm_model = settings.resolved_model
+            await run_evaluators(session, call)
         except Exception as exc:  # noqa: BLE001 - worker must never crash
             logger.warning("Analysis failed for call %s: %s", call_id, exc)
             call.analysis_status = "failed"
             call.analysis_error = str(exc)[:2000]
         await session.commit()
+        if call.analysis_status == "completed":
+            try:
+                await check_call_alerts(session, call)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Alert check failed for call %s: %s", call_id, exc)
+
+
+async def _check_skipped_alerts(call_ids: list[str]) -> None:
+    """Keyword/latency alert rules work without an LLM, so evaluate them
+    even for calls whose analysis was skipped."""
+    async with SessionLocal() as session:
+        for call_id in call_ids:
+            call = (
+                await session.execute(
+                    select(Call).options(selectinload(Call.turns)).where(Call.id == call_id)
+                )
+            ).scalar_one_or_none()
+            if call is not None:
+                await check_call_alerts(session, call)
 
 
 async def _claim_pending(limit: int) -> list[str]:
@@ -67,7 +91,13 @@ async def _claim_pending(limit: int) -> list[str]:
             call = await session.get(Call, call_id)
             call.analysis_status = new_status
         await session.commit()
-        return list(rows) if new_status == "processing" else []
+    if new_status == "skipped":
+        try:
+            await _check_skipped_alerts(list(rows))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Alert check for skipped calls failed: %s", exc)
+        return []
+    return list(rows)
 
 
 async def run_worker(stop_event: asyncio.Event) -> None:
@@ -79,6 +109,7 @@ async def run_worker(stop_event: asyncio.Event) -> None:
         settings.resolved_provider,
         settings.resolved_model if settings.resolved_provider != "none" else "-",
     )
+    last_window_check = 0.0
     while not stop_event.is_set():
         try:
             claimed = await _claim_pending(settings.analysis_concurrency)
@@ -87,6 +118,14 @@ async def run_worker(stop_event: asyncio.Event) -> None:
                 continue  # immediately look for more work
         except Exception as exc:  # noqa: BLE001
             logger.error("Worker loop error: %s", exc)
+        now = asyncio.get_event_loop().time()
+        if now - last_window_check >= WINDOW_ALERT_INTERVAL_SECONDS:
+            last_window_check = now
+            try:
+                async with SessionLocal() as session:
+                    await check_window_alerts(session)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Window alert check failed: %s", exc)
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=settings.analysis_poll_seconds)
         except asyncio.TimeoutError:

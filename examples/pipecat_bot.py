@@ -21,7 +21,7 @@ from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.services.daily import DailyParams, DailyTransport
 
-from opencall_sdk.pipecat import create_recorder  # <-- OpenCall
+from opencall_sdk.pipecat import OpenCallMetricsObserver, create_recorder  # <-- OpenCall
 
 SYSTEM_PROMPT = "You are a friendly receptionist for Brightsmile Dental. Keep answers short."
 
@@ -64,7 +64,11 @@ async def main():
         ]
     )
 
-    task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=True))
+    task = PipelineTask(
+        pipeline,
+        params=PipelineParams(allow_interruptions=True, enable_metrics=True),
+        observers=[OpenCallMetricsObserver(recorder)],           # <-- OpenCall
+    )
 
     @transport.event_handler("on_participant_left")
     async def on_participant_left(transport, participant, reason):

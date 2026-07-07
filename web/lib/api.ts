@@ -5,7 +5,23 @@ export type Turn = {
   start_time: number | null;
   end_time: number | null;
   latency_ms: number | null;
+  stt_ms: number | null;
+  llm_ttft_ms: number | null;
+  tts_ttfb_ms: number | null;
   interrupted: boolean;
+};
+
+export type Quality = {
+  user_talk_seconds?: number;
+  assistant_talk_seconds?: number;
+  talk_ratio?: number | null;
+  assistant_wpm?: number | null;
+  longest_monologue_words?: number;
+  interruption_count?: number;
+  max_silence_seconds?: number;
+  total_silence_seconds?: number;
+  long_silence_count?: number;
+  turn_count?: number;
 };
 
 export type Call = {
@@ -32,11 +48,21 @@ export type Call = {
   success_score: number | null;
   success_rationale: string | null;
   structured_data: Record<string, unknown> | null;
+  quality: Quality | null;
+  interruption_count: number;
   llm_model: string | null;
   created_at: string;
 };
 
-export type CallDetail = Call & { turns: Turn[] };
+export type EvaluationResult = {
+  evaluator_id: number;
+  evaluator_name: string;
+  passed: boolean | null;
+  reason: string | null;
+  created_at: string;
+};
+
+export type CallDetail = Call & { turns: Turn[]; evaluations: EvaluationResult[] };
 
 export type CallList = {
   items: Call[];
@@ -83,8 +109,83 @@ export type AnalysisConfig = {
   extraction_fields: ExtractionField[];
 };
 
+export type LatencyStats = {
+  turn_count: number;
+  e2e: { avg: number | null; p50: number | null; p95: number | null; p99: number | null };
+  components: Record<string, { avg: number | null; p50: number | null; p95: number | null }>;
+  daily: { date: string; p50: number | null; p95: number | null; count: number }[];
+  quality: {
+    calls: number | null;
+    avg_interruptions: number | null;
+    pct_calls_with_long_silence: number | null;
+    avg_talk_ratio: number | null;
+    avg_assistant_wpm: number | null;
+  };
+};
+
+export type AlertTrigger =
+  | "negative_sentiment_call"
+  | "failed_call"
+  | "keyword_match"
+  | "high_latency_call"
+  | "success_rate_window"
+  | "sentiment_window";
+
+export type AlertRule = {
+  id: number;
+  name: string;
+  enabled: boolean;
+  trigger: AlertTrigger;
+  threshold: number | null;
+  keyword: string | null;
+  window_minutes: number;
+  min_calls: number;
+  channel: "webhook" | "slack";
+  target_url: string;
+  cooldown_minutes: number;
+  last_fired_at: string | null;
+};
+
+export type AlertEvent = {
+  id: number;
+  rule_id: number | null;
+  rule_name: string;
+  call_id: string | null;
+  message: string;
+  fired_at: string;
+  delivered: boolean;
+  delivery_error: string | null;
+};
+
+export type EvaluatorStats = {
+  id: number;
+  name: string;
+  enabled: boolean;
+  total: number;
+  passed: number;
+  pass_rate: number | null;
+};
+
+export type Evaluator = {
+  id: number;
+  name: string;
+  prompt: string;
+  enabled: boolean;
+  created_at: string;
+};
+
 export const fetcher = async (url: string) => {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`API error ${res.status}`);
   return res.json();
 };
+
+export async function apiSend(url: string, method: string, body?: unknown) {
+  const res = await fetch(url, {
+    method,
+    headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) throw new Error(`API error ${res.status}`);
+  return res.status === 204 ? null : res.json();
+}

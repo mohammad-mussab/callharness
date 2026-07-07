@@ -34,6 +34,13 @@ class CallRecorder:
         self.started_at: datetime = datetime.now(timezone.utc)
         self.turns: list[dict[str, Any]] = []
         self._flushed = False
+        self._pending_components: dict[str, float] = {}
+
+    def record_component_latency(self, component: str, ms: float) -> None:
+        """Record STT/LLM/TTS latency for the *next* assistant turn.
+        component: "stt" | "llm" | "tts"."""
+        if component in ("stt", "llm", "tts") and ms >= 0:
+            self._pending_components[component] = round(ms, 1)
 
     def add_turn(
         self,
@@ -41,6 +48,9 @@ class CallRecorder:
         text: str,
         start_time: float | None = None,
         latency_ms: float | None = None,
+        stt_ms: float | None = None,
+        llm_ttft_ms: float | None = None,
+        tts_ttfb_ms: float | None = None,
         interrupted: bool = False,
     ) -> None:
         if role not in ("user", "assistant") or not text.strip():
@@ -51,12 +61,28 @@ class CallRecorder:
             return
         if start_time is None:
             start_time = (datetime.now(timezone.utc) - self.started_at).total_seconds()
+        if role == "assistant" and self._pending_components:
+            stt_ms = stt_ms if stt_ms is not None else self._pending_components.get("stt")
+            llm_ttft_ms = (
+                llm_ttft_ms if llm_ttft_ms is not None else self._pending_components.get("llm")
+            )
+            tts_ttfb_ms = (
+                tts_ttfb_ms if tts_ttfb_ms is not None else self._pending_components.get("tts")
+            )
+            self._pending_components = {}
+        if latency_ms is None:
+            # Approximate voice-to-voice latency as the sum of component latencies
+            components = [v for v in (stt_ms, llm_ttft_ms, tts_ttfb_ms) if v is not None]
+            latency_ms = round(sum(components), 1) if components else None
         self.turns.append(
             {
                 "role": role,
                 "text": text.strip(),
                 "start_time": round(start_time, 2),
                 "latency_ms": latency_ms,
+                "stt_ms": stt_ms,
+                "llm_ttft_ms": llm_ttft_ms,
+                "tts_ttfb_ms": tts_ttfb_ms,
                 "interrupted": interrupted,
             }
         )

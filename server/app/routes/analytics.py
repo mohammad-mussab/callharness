@@ -1,3 +1,4 @@
+import math
 from collections import defaultdict
 from datetime import datetime, timedelta
 
@@ -6,8 +7,23 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
-from ..models import Call, utcnow
-from ..schemas import OverviewOut, TimeseriesPoint
+from ..models import Call, Turn, utcnow
+from ..schemas import LatencyOut, OverviewOut, TimeseriesPoint
+
+
+def percentile(values: list[float], p: float) -> float | None:
+    if not values:
+        return None
+    s = sorted(values)
+    k = (len(s) - 1) * p / 100
+    f, c = math.floor(k), math.ceil(k)
+    if f == c:
+        return round(s[f], 1)
+    return round(s[f] + (s[c] - s[f]) * (k - f), 1)
+
+
+def _avg(values: list[float]) -> float | None:
+    return round(sum(values) / len(values), 1) if values else None
 
 router = APIRouter(prefix="/api/v1/analytics", tags=["analytics"])
 
@@ -80,6 +96,96 @@ async def overview(
         sentiment_distribution=sentiment_dist,
         end_reason_breakdown=reason_breakdown,
         agents=list(agents),
+    )
+
+
+@router.get("/latency", response_model=LatencyOut)
+async def latency(
+    session: AsyncSession = Depends(get_session),
+    days: int = Query(default=14, ge=1, le=90),
+    agent_id: str | None = None,
+):
+    since = utcnow() - timedelta(days=days)
+
+    turn_query = (
+        select(
+            Turn.latency_ms,
+            Turn.stt_ms,
+            Turn.llm_ttft_ms,
+            Turn.tts_ttfb_ms,
+            Call.started_at,
+        )
+        .join(Call, Turn.call_id == Call.id)
+        .where(Turn.role == "assistant", Call.started_at >= since)
+    )
+    if agent_id:
+        turn_query = turn_query.where(Call.agent_id == agent_id)
+    turn_rows = (await session.execute(turn_query)).all()
+
+    e2e = [r.latency_ms for r in turn_rows if r.latency_ms is not None]
+    components = {}
+    for key, attr in (("stt", "stt_ms"), ("llm", "llm_ttft_ms"), ("tts", "tts_ttfb_ms")):
+        vals = [getattr(r, attr) for r in turn_rows if getattr(r, attr) is not None]
+        components[key] = {
+            "avg": _avg(vals),
+            "p50": percentile(vals, 50),
+            "p95": percentile(vals, 95),
+        }
+
+    # Daily p50/p95 of end-to-end response latency
+    buckets: dict[str, list[float]] = defaultdict(list)
+    for r in turn_rows:
+        if r.latency_ms is not None:
+            buckets[r.started_at.strftime("%Y-%m-%d")].append(r.latency_ms)
+    day0 = (utcnow() - timedelta(days=days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    daily = []
+    for i in range(days):
+        day = (day0 + timedelta(days=i)).strftime("%Y-%m-%d")
+        vals = buckets.get(day, [])
+        daily.append(
+            {
+                "date": day,
+                "p50": percentile(vals, 50),
+                "p95": percentile(vals, 95),
+                "count": len(vals),
+            }
+        )
+
+    # Conversation-quality aggregates over calls in range
+    call_query = select(Call.quality, Call.interruption_count).where(Call.started_at >= since)
+    if agent_id:
+        call_query = call_query.where(Call.agent_id == agent_id)
+    call_rows = (await session.execute(call_query)).all()
+    qualities = [r.quality for r in call_rows if r.quality]
+    n_calls = len(call_rows)
+    long_silence_calls = sum(1 for q in qualities if (q.get("long_silence_count") or 0) > 0)
+    talk_ratios = [q["talk_ratio"] for q in qualities if q.get("talk_ratio") is not None]
+    wpms = [q["assistant_wpm"] for q in qualities if q.get("assistant_wpm") is not None]
+    quality_agg = {
+        "calls": float(n_calls),
+        "avg_interruptions": (
+            round(sum(r.interruption_count or 0 for r in call_rows) / n_calls, 2)
+            if n_calls
+            else None
+        ),
+        "pct_calls_with_long_silence": (
+            round(long_silence_calls / len(qualities), 3) if qualities else None
+        ),
+        "avg_talk_ratio": (round(sum(talk_ratios) / len(talk_ratios), 2) if talk_ratios else None),
+        "avg_assistant_wpm": (round(sum(wpms) / len(wpms), 0) if wpms else None),
+    }
+
+    return LatencyOut(
+        turn_count=len(turn_rows),
+        e2e={
+            "avg": _avg(e2e),
+            "p50": percentile(e2e, 50),
+            "p95": percentile(e2e, 95),
+            "p99": percentile(e2e, 99),
+        },
+        components=components,
+        daily=daily,
+        quality=quality_agg,
     )
 
 

@@ -114,6 +114,63 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
               </dl>
             </Panel>
           )}
+          {call.evaluations.length > 0 && (
+            <Panel title="Evaluations">
+              <div className="space-y-3">
+                {call.evaluations.map((ev) => (
+                  <div key={ev.evaluator_id} className="text-sm">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-zinc-300">{ev.evaluator_name}</span>
+                      {ev.passed === null ? (
+                        <span className="text-xs text-zinc-500">error</span>
+                      ) : ev.passed ? (
+                        <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-400">Pass</span>
+                      ) : (
+                        <span className="rounded-full bg-red-500/15 px-2 py-0.5 text-xs font-medium text-red-400">Fail</span>
+                      )}
+                    </div>
+                    {ev.reason && <p className="mt-0.5 text-xs text-zinc-500">{ev.reason}</p>}
+                  </div>
+                ))}
+              </div>
+            </Panel>
+          )}
+          {call.quality && (
+            <Panel title="Conversation quality">
+              <dl className="space-y-2 text-sm">
+                <div className="flex justify-between">
+                  <dt className="text-zinc-500">Interruptions</dt>
+                  <dd className="text-zinc-200">{call.quality.interruption_count ?? 0}</dd>
+                </div>
+                <div className="flex justify-between">
+                  <dt className="text-zinc-500">Longest silence</dt>
+                  <dd className="text-zinc-200">
+                    {call.quality.max_silence_seconds != null ? `${call.quality.max_silence_seconds}s` : "—"}
+                  </dd>
+                </div>
+                <div className="flex justify-between">
+                  <dt className="text-zinc-500">Talk ratio (agent : caller)</dt>
+                  <dd className="text-zinc-200">
+                    {call.quality.talk_ratio != null ? `${call.quality.talk_ratio} : 1` : "—"}
+                  </dd>
+                </div>
+                <div className="flex justify-between">
+                  <dt className="text-zinc-500">Agent pace</dt>
+                  <dd className="text-zinc-200">
+                    {call.quality.assistant_wpm != null ? `${call.quality.assistant_wpm} wpm` : "—"}
+                  </dd>
+                </div>
+                <div className="flex justify-between">
+                  <dt className="text-zinc-500">Longest agent monologue</dt>
+                  <dd className="text-zinc-200">
+                    {call.quality.longest_monologue_words != null
+                      ? `${call.quality.longest_monologue_words} words`
+                      : "—"}
+                  </dd>
+                </div>
+              </dl>
+            </Panel>
+          )}
           {call.metadata && Object.keys(call.metadata).length > 0 && (
             <Panel title="Metadata">
               <pre className="overflow-x-auto text-xs text-zinc-400">
@@ -157,7 +214,18 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
                         <span className="text-zinc-600">{formatClock(turn.start_time)}</span>
                       )}
                       {turn.latency_ms != null && (
-                        <span className="text-zinc-600">· {Math.round(turn.latency_ms)}ms</span>
+                        <span
+                          className="text-zinc-600"
+                          title={[
+                            turn.stt_ms != null ? `STT ${Math.round(turn.stt_ms)}ms` : null,
+                            turn.llm_ttft_ms != null ? `LLM ${Math.round(turn.llm_ttft_ms)}ms` : null,
+                            turn.tts_ttfb_ms != null ? `TTS ${Math.round(turn.tts_ttfb_ms)}ms` : null,
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        >
+                          · {Math.round(turn.latency_ms)}ms
+                        </span>
                       )}
                       {turn.interrupted && <span className="text-amber-500">· interrupted</span>}
                     </div>

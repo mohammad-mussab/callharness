@@ -10,6 +10,9 @@ class TurnIn(BaseModel):
     start_time: float | None = None
     end_time: float | None = None
     latency_ms: float | None = None
+    stt_ms: float | None = None
+    llm_ttft_ms: float | None = None
+    tts_ttfb_ms: float | None = None
     interrupted: bool = False
 
 
@@ -36,6 +39,9 @@ class TurnOut(BaseModel):
     start_time: float | None
     end_time: float | None
     latency_ms: float | None
+    stt_ms: float | None
+    llm_ttft_ms: float | None
+    tts_ttfb_ms: float | None
     interrupted: bool
 
     model_config = {"from_attributes": True}
@@ -65,14 +71,27 @@ class CallOut(BaseModel):
     success_score: float | None
     success_rationale: str | None
     structured_data: dict[str, Any] | None
+    quality: dict[str, Any] | None
+    interruption_count: int
     llm_model: str | None
     created_at: datetime
 
     model_config = {"from_attributes": True, "populate_by_name": True}
 
 
+class EvaluationResultOut(BaseModel):
+    evaluator_id: int
+    evaluator_name: str
+    passed: bool | None
+    reason: str | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class CallDetailOut(CallOut):
     turns: list[TurnOut] = Field(default_factory=list)
+    evaluations: list[EvaluationResultOut] = Field(default_factory=list)
 
 
 class CallListOut(BaseModel):
@@ -124,6 +143,79 @@ class TimeseriesPoint(BaseModel):
     success_rate: float | None
     avg_sentiment: float | None
     avg_duration_seconds: float | None
+
+
+class LatencyOut(BaseModel):
+    turn_count: int
+    e2e: dict[str, float | None]
+    components: dict[str, dict[str, float | None]]
+    daily: list[dict[str, Any]]
+    quality: dict[str, float | None]
+
+
+AlertTrigger = Literal[
+    "negative_sentiment_call",
+    "failed_call",
+    "keyword_match",
+    "high_latency_call",
+    "success_rate_window",
+    "sentiment_window",
+]
+
+
+class AlertRuleIn(BaseModel):
+    name: str
+    enabled: bool = True
+    trigger: AlertTrigger
+    threshold: float | None = None
+    keyword: str | None = None
+    window_minutes: int = Field(default=60, ge=5, le=1440)
+    min_calls: int = Field(default=5, ge=1)
+    channel: Literal["webhook", "slack"] = "webhook"
+    target_url: str
+    cooldown_minutes: int = Field(default=15, ge=0)
+
+
+class AlertRuleOut(AlertRuleIn):
+    id: int
+    last_fired_at: datetime | None
+
+    model_config = {"from_attributes": True}
+
+
+class AlertEventOut(BaseModel):
+    id: int
+    rule_id: int | None
+    rule_name: str
+    call_id: str | None
+    message: str
+    fired_at: datetime
+    delivered: bool
+    delivery_error: str | None
+
+    model_config = {"from_attributes": True}
+
+
+class EvaluatorIn(BaseModel):
+    name: str
+    prompt: str
+    enabled: bool = True
+
+
+class EvaluatorOut(EvaluatorIn):
+    id: int
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class EvaluatorStatsOut(BaseModel):
+    id: int
+    name: str
+    enabled: bool
+    total: int
+    passed: int
+    pass_rate: float | None
 
 
 class HealthOut(BaseModel):

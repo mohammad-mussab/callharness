@@ -77,3 +77,52 @@ def create_recorder(
     """Convenience factory: builds the client and recorder in one call."""
     client = AsyncOpenCallClient(base_url=base_url, api_key=api_key)
     return PipecatCallRecorder(client, agent_id=agent_id, **kwargs)
+
+
+try:  # Observer requires pipecat to be installed
+    from pipecat.frames.frames import MetricsFrame
+    from pipecat.metrics.metrics import TTFBMetricsData
+    from pipecat.observers.base_observer import BaseObserver, FramePushed
+
+    class OpenCallMetricsObserver(BaseObserver):
+        """Pipecat observer that captures per-service TTFB metrics and feeds
+        them to the recorder, so assistant turns get STT/LLM/TTS latency.
+
+        Usage:
+            task = PipelineTask(
+                pipeline,
+                params=PipelineParams(enable_metrics=True),
+                observers=[OpenCallMetricsObserver(recorder)],
+            )
+        """
+
+        def __init__(self, recorder: PipecatCallRecorder, **kwargs: Any):
+            super().__init__(**kwargs)
+            self._recorder = recorder
+
+        async def on_push_frame(self, data: "FramePushed") -> None:
+            frame = getattr(data, "frame", None)
+            if not isinstance(frame, MetricsFrame):
+                return
+            for metric in getattr(frame, "data", None) or []:
+                if not isinstance(metric, TTFBMetricsData):
+                    continue
+                processor = (getattr(metric, "processor", "") or "").lower()
+                value = getattr(metric, "value", None)
+                if value is None:
+                    continue
+                ms = float(value) * 1000
+                if "stt" in processor:
+                    self._recorder.record_component_latency("stt", ms)
+                elif "llm" in processor:
+                    self._recorder.record_component_latency("llm", ms)
+                elif "tts" in processor:
+                    self._recorder.record_component_latency("tts", ms)
+
+except ImportError:  # pragma: no cover - pipecat not installed
+
+    class OpenCallMetricsObserver:  # type: ignore[no-redef]
+        def __init__(self, *args: Any, **kwargs: Any):
+            raise ImportError(
+                "OpenCallMetricsObserver requires pipecat: pip install pipecat-ai"
+            )

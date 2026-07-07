@@ -12,7 +12,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.db import SessionLocal, init_db  # noqa: E402
-from app.models import Call, Turn, utcnow  # noqa: E402
+from app.models import (  # noqa: E402
+    AlertEvent,
+    AlertRule,
+    Call,
+    EvaluationResult,
+    Evaluator,
+    Turn,
+    utcnow,
+)
+from app.quality import compute_quality  # noqa: E402
 
 random.seed(42)
 
@@ -127,11 +136,18 @@ SCENARIOS = [
 ]
 
 
-def make_turns(spec: list[tuple[str, str]]) -> tuple[list[Turn], float]:
+def make_turns(spec: list[tuple[str, str]], slow_day: bool = False) -> tuple[list[Turn], float]:
     turns = []
     t = 0.8
+    lat_scale = 1.5 if slow_day else 1.0
     for i, (role, text) in enumerate(spec):
         speak_seconds = max(1.2, len(text) / 14.0)
+        stt = llm = tts = latency = None
+        if role == "assistant":
+            stt = max(80.0, random.gauss(300, 70) * lat_scale)
+            llm = max(150.0, random.gauss(550, 160) * lat_scale)
+            tts = max(60.0, random.gauss(200, 50) * lat_scale)
+            latency = stt + llm + tts + max(0.0, random.gauss(60, 30))
         turns.append(
             Turn(
                 idx=i,
@@ -139,7 +155,10 @@ def make_turns(spec: list[tuple[str, str]]) -> tuple[list[Turn], float]:
                 text=text,
                 start_time=round(t, 2),
                 end_time=round(t + speak_seconds, 2),
-                latency_ms=round(random.gauss(850, 200), 0) if role == "assistant" else None,
+                latency_ms=round(latency, 0) if latency else None,
+                stt_ms=round(stt, 0) if stt else None,
+                llm_ttft_ms=round(llm, 0) if llm else None,
+                tts_ttfb_ms=round(tts, 0) if tts else None,
                 interrupted=random.random() < 0.06,
             )
         )
@@ -147,17 +166,88 @@ def make_turns(spec: list[tuple[str, str]]) -> tuple[list[Turn], float]:
     return turns, t
 
 
+EVALUATORS = [
+    {
+        "name": "Greeted the caller properly",
+        "prompt": "The assistant opened the call with a polite greeting and identified the business before asking anything of the caller.",
+        "pass_bias": 0.9,
+    },
+    {
+        "name": "No unresolved caller frustration",
+        "prompt": "The call did not end with the caller expressing unresolved frustration or giving up on their request.",
+        "pass_bias": 0.7,
+    },
+]
+
+
+async def seed_evaluators_and_alerts(session, calls: list[Call]) -> None:
+    evaluators = []
+    for spec in EVALUATORS:
+        evaluator = Evaluator(name=spec["name"], prompt=spec["prompt"], enabled=True)
+        session.add(evaluator)
+        evaluators.append((evaluator, spec["pass_bias"]))
+    await session.flush()
+
+    for call in calls:
+        if call.analysis_status != "completed":
+            continue
+        for evaluator, bias in evaluators:
+            effective_bias = bias if call.success else bias - 0.5
+            passed = random.random() < max(0.05, effective_bias)
+            session.add(
+                EvaluationResult(
+                    call_id=call.id,
+                    evaluator_id=evaluator.id,
+                    evaluator_name=evaluator.name,
+                    passed=passed,
+                    reason=(
+                        "Demo data: criterion met."
+                        if passed
+                        else "Demo data: criterion not met on this call."
+                    ),
+                )
+            )
+
+    rule = AlertRule(
+        name="Angry caller alert (example)",
+        enabled=False,
+        trigger="negative_sentiment_call",
+        threshold=-0.5,
+        channel="slack",
+        target_url="https://hooks.slack.com/services/REPLACE/ME",
+        cooldown_minutes=15,
+    )
+    session.add(rule)
+    await session.flush()
+    now = utcnow()
+    negative_calls = [c for c in calls if (c.sentiment_score or 0) <= -0.5][:3]
+    for i, call in enumerate(negative_calls):
+        session.add(
+            AlertEvent(
+                rule_id=rule.id,
+                rule_name=rule.name,
+                call_id=call.id,
+                message=f"Negative sentiment ({call.sentiment_score:+.2f}) on call "
+                f"{call.id[:8]} (agent {call.agent_id}): {call.summary}",
+                fired_at=now - timedelta(hours=6 * (i + 1)),
+                delivered=True,
+            )
+        )
+
+
 async def main() -> None:
     await init_db()
     now = utcnow()
     created = 0
+    all_calls: list[Call] = []
     async with SessionLocal() as session:
         for day_offset in range(13, -1, -1):
             # busier weekdays, ramping volume in recent days
             n_calls = random.randint(3, 6) + (2 if day_offset < 5 else 0)
+            slow_day = day_offset in (6, 7)  # simulate a latency regression window
             for _ in range(n_calls):
                 scenario = random.choice(SCENARIOS)
-                turns, total_seconds = make_turns(scenario["turns"])
+                turns, total_seconds = make_turns(scenario["turns"], slow_day=slow_day)
                 started = now - timedelta(
                     days=day_offset,
                     hours=random.randint(0, 9),
@@ -194,10 +284,16 @@ async def main() -> None:
                     turns=turns,
                     meta={"seed": True, "topic": scenario["topic"]},
                 )
+                quality = compute_quality(turns)
+                call.quality = quality
+                call.interruption_count = quality["interruption_count"] if quality else 0
                 session.add(call)
+                all_calls.append(call)
                 created += 1
+        await session.flush()
+        await seed_evaluators_and_alerts(session, all_calls)
         await session.commit()
-    print(f"Seeded {created} demo calls.")
+    print(f"Seeded {created} demo calls, {len(EVALUATORS)} evaluators, 1 alert rule.")
 
 
 if __name__ == "__main__":

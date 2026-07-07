@@ -40,4 +40,16 @@ recorder.attach(transcript)
 await recorder.flush(end_reason="completed")
 ```
 
+To capture per-turn STT/LLM/TTS latency, add the metrics observer to your task:
+
+```python
+from opencall_sdk.pipecat import OpenCallMetricsObserver
+
+task = PipelineTask(
+    pipeline,
+    params=PipelineParams(enable_metrics=True),
+    observers=[OpenCallMetricsObserver(recorder)],
+)
+```
+
 See [examples/pipecat_bot.py](../examples/pipecat_bot.py) for a full working bot.

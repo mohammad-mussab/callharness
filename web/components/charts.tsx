@@ -76,6 +76,25 @@ export function SuccessChart({ data }: { data: TimeseriesPoint[] }) {
   );
 }
 
+export function LatencyTrend({
+  data,
+}: {
+  data: { date: string; p50: number | null; p95: number | null }[];
+}) {
+  return (
+    <ResponsiveContainer width="100%" height={220}>
+      <LineChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: -16 }}>
+        <CartesianGrid stroke="#27272a" vertical={false} />
+        <XAxis dataKey="date" tickFormatter={shortDate} stroke="#52525b" fontSize={11} />
+        <YAxis stroke="#52525b" fontSize={11} unit="ms" />
+        <Tooltip contentStyle={tooltipStyle} />
+        <Line type="monotone" dataKey="p50" stroke="#818cf8" strokeWidth={2} dot={false} connectNulls />
+        <Line type="monotone" dataKey="p95" stroke="#f59e0b" strokeWidth={2} dot={false} connectNulls />
+      </LineChart>
+    </ResponsiveContainer>
+  );
+}
+
 const SENTIMENT_COLORS: Record<string, string> = {
   positive: "#34d399",
   neutral: "#a1a1aa",

@@ -8,10 +8,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from .analysis.worker import run_worker
 from .config import settings
 from .db import init_db
-from .routes import analytics, calls, config
+from .routes import alerts, analytics, calls, config, evaluators
 from .schemas import HealthOut
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
@@ -43,6 +43,8 @@ app.add_middleware(
 app.include_router(calls.router)
 app.include_router(analytics.router)
 app.include_router(config.router)
+app.include_router(alerts.router)
+app.include_router(evaluators.router)
 
 
 @app.get("/api/v1/health", response_model=HealthOut, tags=["health"])

@@ -9,7 +9,14 @@ from sqlalchemy.orm import selectinload
 from ..auth import require_api_key
 from ..db import get_session
 from ..models import Call, Turn
-from ..schemas import CallCreate, CallDetailOut, CallListOut, CallOut
+from ..quality import compute_quality
+from ..schemas import (
+    CallCreate,
+    CallDetailOut,
+    CallListOut,
+    CallOut,
+    EvaluationResultOut,
+)
 from ..storage import content_type_for, save_recording
 
 router = APIRouter(prefix="/api/v1/calls", tags=["calls"])
@@ -66,9 +73,15 @@ async def ingest_call(payload: CallCreate, session: AsyncSession = Depends(get_s
                 start_time=t.start_time,
                 end_time=t.end_time,
                 latency_ms=t.latency_ms,
+                stt_ms=t.stt_ms,
+                llm_ttft_ms=t.llm_ttft_ms,
+                tts_ttfb_ms=t.tts_ttfb_ms,
                 interrupted=t.interrupted,
             )
         )
+    quality = compute_quality(call.turns)
+    call.quality = quality
+    call.interruption_count = quality["interruption_count"] if quality else 0
     session.add(call)
     await session.commit()
     await session.refresh(call)
@@ -136,8 +149,19 @@ async def _get_call(session: AsyncSession, call_id: str, with_turns: bool = Fals
 
 @router.get("/{call_id}", response_model=CallDetailOut)
 async def get_call(call_id: str, session: AsyncSession = Depends(get_session)):
-    call = await _get_call(session, call_id, with_turns=True)
-    return _to_out(call, detail=True)
+    query = (
+        select(Call)
+        .where(Call.id == call_id)
+        .options(selectinload(Call.turns), selectinload(Call.evaluation_results))
+    )
+    call = (await session.execute(query)).scalar_one_or_none()
+    if call is None:
+        raise HTTPException(status_code=404, detail="Call not found")
+    out = _to_out(call, detail=True)
+    out.evaluations = [
+        EvaluationResultOut.model_validate(r) for r in call.evaluation_results
+    ]
+    return out
 
 
 @router.post(

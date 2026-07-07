@@ -1,0 +1,45 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: opencall
+      POSTGRES_PASSWORD: opencall
+      POSTGRES_DB: opencall
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opencall"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: ./server
+    environment:
+      OPENCALL_DATABASE_URL: postgresql+asyncpg://opencall:opencall@db:5432/opencall
+      OPENCALL_DATA_DIR: /data
+      # Provide one of these to enable post-call analysis:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Optional: protect write endpoints
+      OPENCALL_API_KEY: ${OPENCALL_API_KEY:-}
+    volumes:
+      - calls_data:/data
+    ports:
+      - "8010:8010"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    build: ./web
+    environment:
+      OPENCALL_API_URL: http://api:8010
+    ports:
+      - "3010:3010"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  calls_data:

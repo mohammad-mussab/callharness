@@ -52,4 +52,26 @@ task = PipelineTask(
 )
 ```
 
+## Pipecat without TranscriptProcessor
+
+If your pipeline doesn't use `TranscriptProcessor` (e.g. you capture transcripts at
+the frame level), use the all-in-one frame observer instead — it captures transcript
+turns, end-to-end response latency, STT/LLM/TTS components, interruptions, and
+transfers, all from one observer:
+
+```python
+from opencall_sdk.pipecat import OpenCallFrameObserver, create_recorder
+
+recorder = create_recorder("http://localhost:8010", agent_id="my-agent")
+observer = OpenCallFrameObserver(
+    recorder, stt=stt, tts=tts, transfer_tool_names={"transfer_to_human"}
+)
+# add `observer` to your PipelineTask/PipelineWorker observers, then on call end:
+await recorder.flush(
+    end_reason="transfer" if observer.transferred else "completed",
+    transferred=observer.transferred,
+    recording_bytes=wav_bytes,   # optional in-memory recording upload
+)
+```
+
 See [examples/pipecat_bot.py](../examples/pipecat_bot.py) for a full working bot.

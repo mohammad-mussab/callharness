@@ -49,6 +49,15 @@ class OpenCallClient:
         resp.raise_for_status()
         return resp.json()
 
+    def upload_recording_bytes(
+        self, call_id: str, content: bytes, filename: str = "recording.wav"
+    ) -> dict[str, Any]:
+        resp = self._client.post(
+            f"/api/v1/calls/{call_id}/recording", files={"file": (filename, content)}
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     def close(self) -> None:
         self._client.close()
 
@@ -76,6 +85,15 @@ class AsyncOpenCallClient:
         resp = await self._client.post(
             f"/api/v1/calls/{call_id}/recording",
             files={"file": (p.name, p.read_bytes())},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    async def upload_recording_bytes(
+        self, call_id: str, content: bytes, filename: str = "recording.wav"
+    ) -> dict[str, Any]:
+        resp = await self._client.post(
+            f"/api/v1/calls/{call_id}/recording", files={"file": (filename, content)}
         )
         resp.raise_for_status()
         return resp.json()

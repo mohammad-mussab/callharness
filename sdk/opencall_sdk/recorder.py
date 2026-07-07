@@ -92,6 +92,8 @@ class CallRecorder:
         end_reason: str | None = None,
         transferred: bool = False,
         recording_path: str | None = None,
+        recording_bytes: bytes | None = None,
+        recording_filename: str = "recording.wav",
     ) -> dict[str, Any] | None:
         """Upload the call. Safe to call multiple times; only uploads once."""
         if self._flushed:
@@ -117,6 +119,10 @@ class CallRecorder:
             )
             if recording_path:
                 await self.client.upload_recording(call["id"], recording_path)
+            elif recording_bytes:
+                await self.client.upload_recording_bytes(
+                    call["id"], recording_bytes, recording_filename
+                )
             logger.info("OpenCall: uploaded call %s (%d turns)", call["id"], len(self.turns))
             return call
         except Exception as exc:  # noqa: BLE001 - never crash the host agent

@@ -6,7 +6,9 @@ from sqlalchemy import exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from ..analysis.translate import translate_call
 from ..auth import require_api_key
+from ..config import settings
 from ..db import get_session
 from ..models import Call, Turn
 from ..quality import compute_quality
@@ -202,6 +204,35 @@ async def reanalyze(call_id: str, session: AsyncSession = Depends(get_session)):
     await session.commit()
     await session.refresh(call)
     return _to_out(call)
+
+
+@router.post(
+    "/{call_id}/translate",
+    response_model=CallDetailOut,
+    dependencies=[Depends(require_api_key)],
+)
+async def translate(
+    call_id: str,
+    session: AsyncSession = Depends(get_session),
+    language: str = Query(default="english", max_length=32),
+    force: bool = False,
+):
+    """Translate the transcript to the target language (cached after first run)."""
+    call = await _get_call(session, call_id, with_turns=True)
+    if settings.resolved_provider == "none":
+        raise HTTPException(
+            status_code=400,
+            detail="No LLM provider configured — translation needs an LLM key",
+        )
+    already_translated = all(t.translated_text for t in call.turns if t.text.strip())
+    if not already_translated or force:
+        try:
+            await translate_call(call, target_language=language)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"Translation failed: {exc}")
+        await session.commit()
+        await session.refresh(call)
+    return _to_out(call, detail=True)
 
 
 @router.delete("/{call_id}", status_code=204, dependencies=[Depends(require_api_key)])

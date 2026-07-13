@@ -86,6 +86,39 @@ export default function DashboardPage() {
           {overview ? <ReasonBars data={overview.end_reason_breakdown} /> : null}
         </Panel>
       </div>
+
+      {overview && overview.agent_stats.length > 1 && !agent && (
+        <Panel title="By agent / region">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="text-left text-xs uppercase tracking-wide text-zinc-500">
+                <tr>
+                  <th className="py-2 pr-4">Agent</th>
+                  <th className="py-2 pr-4">Calls</th>
+                  <th className="py-2 pr-4">Success rate</th>
+                  <th className="py-2 pr-4">Avg sentiment</th>
+                  <th className="py-2 pr-4">Avg duration</th>
+                  <th className="py-2">Transfer rate</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-800/70">
+                {overview.agent_stats.map((s) => (
+                  <tr key={s.agent_id}>
+                    <td className="py-2 pr-4 font-medium text-zinc-200">{s.agent_id}</td>
+                    <td className="py-2 pr-4 text-zinc-300">{s.calls}</td>
+                    <td className="py-2 pr-4 text-zinc-300">{formatPercent(s.success_rate)}</td>
+                    <td className="py-2 pr-4 text-zinc-300">
+                      {s.avg_sentiment != null ? s.avg_sentiment.toFixed(2) : "—"}
+                    </td>
+                    <td className="py-2 pr-4 text-zinc-300">{formatDuration(s.avg_duration_seconds)}</td>
+                    <td className="py-2 text-zinc-300">{formatPercent(s.transfer_rate)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
+      )}
     </div>
   );
 }

@@ -30,7 +30,7 @@ const emptyForm = {
   keyword: "",
   window_minutes: 60,
   min_calls: 5,
-  channel: "slack" as "slack" | "webhook",
+  channel: "slack" as "slack" | "webhook" | "email",
   target_url: "",
   cooldown_minutes: 15,
 };
@@ -158,20 +158,34 @@ export default function AlertsPage() {
           <div className="grid gap-3 md:grid-cols-3">
             <select
               value={form.channel}
-              onChange={(e) => setForm({ ...form, channel: e.target.value as "slack" | "webhook" })}
+              onChange={(e) =>
+                setForm({ ...form, channel: e.target.value as "slack" | "webhook" | "email" })
+              }
               className={inputClass}
             >
               <option value="slack">Slack incoming webhook</option>
+              <option value="email">Email</option>
               <option value="webhook">Generic JSON webhook</option>
             </select>
             <input
               required
               value={form.target_url}
               onChange={(e) => setForm({ ...form, target_url: e.target.value })}
-              placeholder="https://hooks.slack.com/services/…"
+              placeholder={
+                form.channel === "email"
+                  ? "team@company.com, manager@company.com"
+                  : "https://hooks.slack.com/services/…"
+              }
               className={`${inputClass} md:col-span-2`}
             />
           </div>
+          {form.channel === "email" && (
+            <p className="text-xs text-zinc-500">
+              Email needs SMTP configured on the server once: set OPENCALL_SMTP_HOST,
+              OPENCALL_SMTP_USER, OPENCALL_SMTP_PASSWORD and OPENCALL_SMTP_FROM in the
+              server&apos;s .env (for Gmail: smtp.gmail.com with an app password).
+            </p>
+          )}
           <div className="flex items-center gap-3">
             <button type="submit" className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500">
               Create rule
@@ -202,7 +216,7 @@ export default function AlertsPage() {
                   {rule.keyword ? ` · "${rule.keyword}"` : ""}
                   {rule.threshold != null ? ` · threshold ${rule.threshold}` : ""}
                   {spec?.windowed ? ` · ${rule.window_minutes}m window` : ""}
-                  {` · ${rule.channel === "slack" ? "Slack" : "Webhook"}`}
+                  {` · ${rule.channel === "slack" ? "Slack" : rule.channel === "email" ? "Email" : "Webhook"}`}
                   {rule.last_fired_at ? ` · last fired ${formatDate(rule.last_fired_at)}` : ""}
                 </div>
               </div>

@@ -2,6 +2,7 @@ export type Turn = {
   idx: number;
   role: "user" | "assistant";
   text: string;
+  translated_text: string | null;
   start_time: number | null;
   end_time: number | null;
   latency_ms: number | null;
@@ -50,6 +51,7 @@ export type Call = {
   structured_data: Record<string, unknown> | null;
   quality: Quality | null;
   interruption_count: number;
+  language: string | null;
   llm_model: string | null;
   created_at: string;
 };
@@ -81,6 +83,16 @@ export type Overview = {
   sentiment_distribution: Record<string, number>;
   end_reason_breakdown: { reason: string; count: number }[];
   agents: string[];
+  agent_stats: AgentStats[];
+};
+
+export type AgentStats = {
+  agent_id: string;
+  calls: number;
+  success_rate: number | null;
+  avg_sentiment: number | null;
+  avg_duration_seconds: number | null;
+  transfer_rate: number | null;
 };
 
 export type TimeseriesPoint = {
@@ -105,6 +117,7 @@ export type AnalysisConfig = {
   success_enabled: boolean;
   success_prompt: string | null;
   success_rubric: "pass_fail" | "numeric_scale";
+  output_language: string;
   extraction_enabled: boolean;
   extraction_fields: ExtractionField[];
 };
@@ -140,7 +153,7 @@ export type AlertRule = {
   keyword: string | null;
   window_minutes: number;
   min_calls: number;
-  channel: "webhook" | "slack";
+  channel: "webhook" | "slack" | "email";
   target_url: string;
   cooldown_minutes: number;
   last_fired_at: string | null;

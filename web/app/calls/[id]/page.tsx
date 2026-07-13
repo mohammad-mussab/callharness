@@ -25,12 +25,19 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
   const audioRef = useRef<HTMLAudioElement>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [reanalyzing, setReanalyzing] = useState(false);
+  const [translating, setTranslating] = useState(false);
+  const [translateError, setTranslateError] = useState(false);
+  const [showTranslation, setShowTranslation] = useState(true);
 
   if (!call) return <div className="p-8 text-zinc-500">Loading…</div>;
 
   const activeTurn = call.turns.findLast?.(
     (t) => t.start_time != null && t.start_time <= currentTime
   );
+  const hasTranslation = call.turns.some((t) => t.translated_text);
+  // Offer translation when the call isn't already in English
+  const offerTranslation =
+    call.turns.length > 0 && call.language != null && call.language !== "english";
 
   async function reanalyze() {
     setReanalyzing(true);
@@ -39,6 +46,23 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
       await mutate();
     } finally {
       setReanalyzing(false);
+    }
+  }
+
+  async function translate() {
+    setTranslating(true);
+    setTranslateError(false);
+    try {
+      const res = await fetch(`/api/v1/calls/${id}/translate?language=english`, {
+        method: "POST",
+      });
+      if (!res.ok) throw new Error(String(res.status));
+      await mutate();
+      setShowTranslation(true);
+    } catch {
+      setTranslateError(true);
+    } finally {
+      setTranslating(false);
     }
   }
 
@@ -57,20 +81,50 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
             {call.analysis_status === "completed" && <SuccessBadge success={call.success} />}
             <SentimentBadge label={call.sentiment_label} />
             <EndReasonBadge reason={call.end_reason} />
+            {call.language && (
+              <span className="inline-flex items-center rounded-full bg-sky-500/15 px-2 py-0.5 text-xs font-medium text-sky-300">
+                {titleCase(call.language)}
+              </span>
+            )}
             <span className="text-xs text-zinc-500">
               {formatDuration(call.duration_seconds)} · {titleCase(call.direction)}
               {call.from_number ? ` · ${call.from_number}` : ""}
             </span>
           </div>
         </div>
-        <button
-          onClick={reanalyze}
-          disabled={reanalyzing || ["pending", "processing"].includes(call.analysis_status)}
-          className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-900 disabled:opacity-40"
-        >
-          {["pending", "processing"].includes(call.analysis_status) ? "Analyzing…" : "Re-analyze"}
-        </button>
+        <div className="flex items-center gap-2">
+          {offerTranslation && !hasTranslation && (
+            <button
+              onClick={translate}
+              disabled={translating}
+              className="rounded-lg border border-sky-800 px-3 py-1.5 text-sm text-sky-300 hover:bg-sky-950/40 disabled:opacity-40"
+            >
+              {translating ? "Translating…" : "Translate to English"}
+            </button>
+          )}
+          {hasTranslation && (
+            <button
+              onClick={() => setShowTranslation((v) => !v)}
+              className="rounded-lg border border-sky-800 px-3 py-1.5 text-sm text-sky-300 hover:bg-sky-950/40"
+            >
+              {showTranslation ? `Show original (${titleCase(call.language ?? "original")})` : "Show English"}
+            </button>
+          )}
+          <button
+            onClick={reanalyze}
+            disabled={reanalyzing || ["pending", "processing"].includes(call.analysis_status)}
+            className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-900 disabled:opacity-40"
+          >
+            {["pending", "processing"].includes(call.analysis_status) ? "Analyzing…" : "Re-analyze"}
+          </button>
+        </div>
       </div>
+
+      {translateError && (
+        <div className="rounded-xl border border-red-900/50 bg-red-950/30 p-3 text-sm text-red-300">
+          Translation failed — check that the server has an LLM key configured, then try again.
+        </div>
+      )}
 
       {call.has_recording && (
         <audio
@@ -115,7 +169,7 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
             </Panel>
           )}
           {call.evaluations.length > 0 && (
-            <Panel title="Evaluations">
+            <Panel title="Custom checks">
               <div className="space-y-3">
                 {call.evaluations.map((ev) => (
                   <div key={ev.evaluator_id} className="text-sm">
@@ -229,7 +283,9 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
                       )}
                       {turn.interrupted && <span className="text-amber-500">· interrupted</span>}
                     </div>
-                    <p className="leading-relaxed text-zinc-200">{turn.text}</p>
+                    <p className="leading-relaxed text-zinc-200">
+                      {showTranslation && turn.translated_text ? turn.translated_text : turn.text}
+                    </p>
                   </div>
                 );
               })}

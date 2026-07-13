@@ -39,6 +39,9 @@ class Call(Base):
     quality: Mapped[dict | None] = mapped_column(JSON, default=None)
     interruption_count: Mapped[int] = mapped_column(Integer, default=0)
 
+    # Primary language spoken on the call, detected during analysis ("italian", ...)
+    language: Mapped[str | None] = mapped_column(String(32))
+
     # pending | processing | completed | failed | skipped
     analysis_status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
     analysis_error: Mapped[str | None] = mapped_column(Text)
@@ -72,6 +75,7 @@ class Turn(Base):
     idx: Mapped[int] = mapped_column(Integer, default=0)
     role: Mapped[str] = mapped_column(String(16))  # user | assistant
     text: Mapped[str] = mapped_column(Text)
+    translated_text: Mapped[str | None] = mapped_column(Text)  # cached on-demand translation
     start_time: Mapped[float | None] = mapped_column(Float)  # seconds from call start
     end_time: Mapped[float | None] = mapped_column(Float)
     latency_ms: Mapped[float | None] = mapped_column(Float)  # response latency (assistant turns)
@@ -152,6 +156,9 @@ class AnalysisConfig(Base):
     success_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     success_prompt: Mapped[str | None] = mapped_column(Text)
     success_rubric: Mapped[str] = mapped_column(String(32), default="pass_fail")  # pass_fail | numeric_scale
+    # Language the LLM writes summaries/rationales/extracted text in, regardless of
+    # the language spoken on the call ("english", "italian", ... or "auto" = same as call)
+    output_language: Mapped[str] = mapped_column(String(32), default="english")
     extraction_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     # list of {"name": str, "type": "text|boolean|number|enum", "description": str, "choices": [str]}
     extraction_fields: Mapped[list | None] = mapped_column(JSON, default=list)

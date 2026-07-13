@@ -25,7 +25,10 @@ def build_transcript(call: Call) -> str:
 
 
 def build_user_prompt(call: Call, config: AnalysisConfig) -> str:
-    sections: list[str] = []
+    sections: list[str] = [
+        '- "language" (string): the primary language spoken on the call, as a '
+        'lowercase English word (e.g. "italian", "english", "spanish").'
+    ]
     schema: dict[str, Any] = {}
 
     if config.summary_enabled:
@@ -85,9 +88,20 @@ def build_user_prompt(call: Call, config: AnalysisConfig) -> str:
     if call.duration_seconds:
         meta += f", duration={round(call.duration_seconds)}s"
 
+    output_language = (config.output_language or "english").strip().lower()
+    if output_language and output_language != "auto":
+        language_note = (
+            f"\nIMPORTANT: Write every free-text value (summary, rationale, extracted "
+            f"text fields) in {output_language.capitalize()}, even if the call is in "
+            f"another language. Keep enum/boolean/number values unchanged."
+        )
+    else:
+        language_note = "\nWrite free-text values in the same language spoken on the call."
+
     return (
         "Analyze this call and return a JSON object with these keys:\n"
         + "\n".join(sections)
+        + language_note
         + f"\n{meta}\n\nTranscript:\n{transcript}"
     )
 
@@ -100,6 +114,10 @@ def _coerce_number(value: Any) -> float | None:
 
 
 def apply_result(call: Call, config: AnalysisConfig, result: dict) -> None:
+    language = result.get("language")
+    if language and isinstance(language, str):
+        call.language = language.strip().lower()[:32]
+
     if config.summary_enabled:
         summary = result.get("summary")
         call.summary = str(summary) if summary else None

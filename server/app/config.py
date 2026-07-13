@@ -33,6 +33,15 @@ class Settings(BaseSettings):
     analysis_poll_seconds: float = 3.0
     analysis_concurrency: int = 2
 
+    # SMTP settings for the email alert channel (OPENCALL_SMTP_*).
+    # Leave smtp_host unset to disable email delivery.
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_user: str | None = None
+    smtp_password: str | None = None
+    smtp_from: str | None = None
+    smtp_starttls: bool = True
+
     @property
     def resolved_provider(self) -> str:
         if self.llm_provider != "auto":

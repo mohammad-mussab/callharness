@@ -4,17 +4,21 @@ Two kinds of triggers:
 - Per-call: evaluated right after a call finishes analysis (or is skipped).
 - Windowed: evaluated periodically by the worker over a rolling time window.
 
-Delivery: generic JSON webhook or Slack incoming webhook. Every firing is
-logged as an AlertEvent regardless of delivery outcome.
+Delivery: generic JSON webhook, Slack incoming webhook, or email (SMTP).
+Every firing is logged as an AlertEvent regardless of delivery outcome.
 """
 
+import asyncio
 import logging
+import smtplib
 from datetime import timedelta
+from email.message import EmailMessage
 
 import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..config import settings
 from ..models import AlertEvent, AlertRule, Call, utcnow
 
 logger = logging.getLogger("opencall.alerts")
@@ -34,13 +38,42 @@ def _in_cooldown(rule: AlertRule) -> bool:
     return utcnow() < rule.last_fired_at + timedelta(minutes=rule.cooldown_minutes)
 
 
+def _send_email_sync(recipients: list[str], subject: str, body: str) -> None:
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = settings.smtp_from or settings.smtp_user or "opencall@localhost"
+    msg["To"] = ", ".join(recipients)
+    msg.set_content(body)
+    with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=15) as smtp:
+        if settings.smtp_starttls:
+            smtp.starttls()
+        if settings.smtp_user and settings.smtp_password:
+            smtp.login(settings.smtp_user, settings.smtp_password)
+        smtp.send_message(msg)
+
+
 async def _deliver(rule: AlertRule, message: str) -> tuple[bool, str | None]:
-    payload = (
-        {"text": f":rotating_light: OpenCall alert — {message}"}
-        if rule.channel == "slack"
-        else {"rule": rule.name, "trigger": rule.trigger, "message": message}
-    )
     try:
+        if rule.channel == "email":
+            if not settings.smtp_host:
+                return False, (
+                    "Email channel needs SMTP configured on the server "
+                    "(OPENCALL_SMTP_HOST, OPENCALL_SMTP_USER, OPENCALL_SMTP_PASSWORD, "
+                    "OPENCALL_SMTP_FROM)"
+                )
+            recipients = [a.strip() for a in rule.target_url.split(",") if a.strip()]
+            if not recipients:
+                return False, "No recipient email addresses configured"
+            await asyncio.to_thread(
+                _send_email_sync, recipients, f"OpenCall alert: {rule.name}", message
+            )
+            return True, None
+
+        payload = (
+            {"text": f":rotating_light: OpenCall alert — {message}"}
+            if rule.channel == "slack"
+            else {"rule": rule.name, "trigger": rule.trigger, "message": message}
+        )
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(rule.target_url, json=payload)
             if resp.status_code >= 300:

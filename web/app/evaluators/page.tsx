@@ -49,16 +49,19 @@ export default function EvaluatorsPage() {
     <div className="mx-auto max-w-4xl space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold text-zinc-100">Evaluators</h1>
-          <p className="text-sm text-zinc-500">
-            Custom LLM-as-judge criteria run against every analyzed call
+          <h1 className="text-xl font-semibold text-zinc-100">Custom Checks</h1>
+          <p className="max-w-xl text-sm text-zinc-500">
+            Yes/no questions that get asked about <span className="text-zinc-300">every call</span>,
+            answered automatically by AI. Example: &quot;Did the agent greet the caller and mention the
+            company name?&quot; Each call gets a Pass or Fail, and the bar shows how often your agent
+            passes — so you can see if a prompt change made things better or worse.
           </p>
         </div>
         <button
           onClick={() => setShowForm((v) => !v)}
           className="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500"
         >
-          {showForm ? "Cancel" : "+ New evaluator"}
+          {showForm ? "Cancel" : "+ New check"}
         </button>
       </div>
 
@@ -81,12 +84,12 @@ export default function EvaluatorsPage() {
           />
           <div className="flex items-center gap-3">
             <button type="submit" className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500">
-              Create evaluator
+              Create check
             </button>
             {error && <span className="text-sm text-red-400">{error}</span>}
           </div>
           <p className="text-xs text-zinc-600">
-            New evaluators run on new calls automatically; use "Re-analyze" on a call to apply them retroactively.
+            New checks run on new calls automatically; use &quot;Re-analyze&quot; on a call to apply them to older calls too.
           </p>
         </form>
       )}
@@ -142,7 +145,7 @@ export default function EvaluatorsPage() {
         ))}
         {evaluators && evaluators.length === 0 && (
           <p className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-6 text-center text-sm text-zinc-500">
-            No evaluators yet. Add a criterion to grade every call against it.
+            No checks yet. Try one like: &quot;The agent confirmed the caller&apos;s phone number before ending the call.&quot;
           </p>
         )}
       </div>

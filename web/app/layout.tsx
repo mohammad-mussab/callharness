@@ -12,7 +12,7 @@ const nav = [
   { href: "/calls", label: "Calls" },
   { href: "/latency", label: "Latency & Quality" },
   { href: "/alerts", label: "Alerts" },
-  { href: "/evaluators", label: "Evaluators" },
+  { href: "/evaluators", label: "Custom Checks" },
   { href: "/settings", label: "Analysis Settings" },
 ];
 

@@ -44,6 +44,7 @@ async def overview(
     date_to: datetime | None = Query(default=None, alias="to"),
 ):
     query = select(
+        Call.agent_id,
         Call.duration_seconds,
         Call.success,
         Call.sentiment_label,
@@ -82,6 +83,47 @@ async def overview(
         .all()
     )
 
+    # Per-agent (per-region) comparison over the same filtered rows
+    by_agent: dict[str, list] = defaultdict(list)
+    for r in rows:
+        by_agent[r.agent_id].append(r)
+    agent_stats = []
+    for name in sorted(by_agent):
+        agent_rows = by_agent[name]
+        agent_success = [r for r in agent_rows if r.success is not None]
+        agent_sentiments = [
+            r.sentiment_score for r in agent_rows if r.sentiment_score is not None
+        ]
+        agent_durations = [
+            r.duration_seconds for r in agent_rows if r.duration_seconds is not None
+        ]
+        agent_stats.append(
+            {
+                "agent_id": name,
+                "calls": len(agent_rows),
+                "success_rate": (
+                    round(sum(1 for r in agent_success if r.success) / len(agent_success), 3)
+                    if agent_success
+                    else None
+                ),
+                "avg_sentiment": (
+                    round(sum(agent_sentiments) / len(agent_sentiments), 2)
+                    if agent_sentiments
+                    else None
+                ),
+                "avg_duration_seconds": (
+                    round(sum(agent_durations) / len(agent_durations), 1)
+                    if agent_durations
+                    else None
+                ),
+                "transfer_rate": (
+                    round(sum(1 for r in agent_rows if r.transferred) / len(agent_rows), 3)
+                    if agent_rows
+                    else None
+                ),
+            }
+        )
+
     return OverviewOut(
         total_calls=total,
         analyzed_calls=analyzed,
@@ -96,6 +138,7 @@ async def overview(
         sentiment_distribution=sentiment_dist,
         end_reason_breakdown=reason_breakdown,
         agents=list(agents),
+        agent_stats=agent_stats,
     )
 
 

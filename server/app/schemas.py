@@ -36,6 +36,7 @@ class TurnOut(BaseModel):
     idx: int
     role: str
     text: str
+    translated_text: str | None = None
     start_time: float | None
     end_time: float | None
     latency_ms: float | None
@@ -73,6 +74,7 @@ class CallOut(BaseModel):
     structured_data: dict[str, Any] | None
     quality: dict[str, Any] | None
     interruption_count: int
+    language: str | None = None
     llm_model: str | None
     created_at: datetime
 
@@ -115,6 +117,7 @@ class AnalysisConfigIn(BaseModel):
     success_enabled: bool = True
     success_prompt: str | None = None
     success_rubric: Literal["pass_fail", "numeric_scale"] = "pass_fail"
+    output_language: str = "english"
     extraction_enabled: bool = True
     extraction_fields: list[ExtractionField] = Field(default_factory=list)
 
@@ -135,6 +138,8 @@ class OverviewOut(BaseModel):
     sentiment_distribution: dict[str, int]
     end_reason_breakdown: list[dict[str, Any]]
     agents: list[str]
+    # Per-agent (per-region) comparison: {agent_id, calls, success_rate, avg_sentiment}
+    agent_stats: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class TimeseriesPoint(BaseModel):
@@ -171,7 +176,8 @@ class AlertRuleIn(BaseModel):
     keyword: str | None = None
     window_minutes: int = Field(default=60, ge=5, le=1440)
     min_calls: int = Field(default=5, ge=1)
-    channel: Literal["webhook", "slack"] = "webhook"
+    channel: Literal["webhook", "slack", "email"] = "webhook"
+    # Webhook/Slack: the URL to POST to. Email: recipient address(es), comma-separated.
     target_url: str
     cooldown_minutes: int = Field(default=15, ge=0)
 

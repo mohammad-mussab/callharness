@@ -121,6 +121,26 @@ export default function SettingsPage() {
       </section>
 
       <section className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+        <div className="text-sm font-medium text-zinc-200">Analysis language</div>
+        <p className="text-sm text-zinc-500">
+          The language summaries, evaluations, and extracted text are written in — even when
+          the call itself is in another language (e.g. calls in Italian, analysis in English).
+        </p>
+        <select
+          value={config.output_language ?? "english"}
+          onChange={(e) => set({ output_language: e.target.value })}
+          className="rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-300"
+        >
+          <option value="english">English</option>
+          <option value="italian">Italian</option>
+          <option value="spanish">Spanish</option>
+          <option value="french">French</option>
+          <option value="german">German</option>
+          <option value="auto">Same language as the call</option>
+        </select>
+      </section>
+
+      <section className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
         <div className="flex items-center justify-between">
           <Toggle label="Extract structured data" checked={config.extraction_enabled} onChange={(v) => set({ extraction_enabled: v })} />
           {config.extraction_enabled && (

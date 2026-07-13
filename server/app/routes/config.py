@@ -30,6 +30,7 @@ async def update_analysis_config(
     config.success_enabled = payload.success_enabled
     config.success_prompt = payload.success_prompt
     config.success_rubric = payload.success_rubric
+    config.output_language = (payload.output_language or "english").strip().lower()
     config.extraction_enabled = payload.extraction_enabled
     config.extraction_fields = [f.model_dump() for f in payload.extraction_fields]
     await session.commit()

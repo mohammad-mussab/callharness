@@ -17,9 +17,12 @@ SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=
 COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
     ("calls", "quality", "JSON"),
     ("calls", "interruption_count", "INTEGER DEFAULT 0"),
+    ("calls", "language", "VARCHAR(32)"),
     ("turns", "stt_ms", "FLOAT"),
     ("turns", "llm_ttft_ms", "FLOAT"),
     ("turns", "tts_ttfb_ms", "FLOAT"),
+    ("turns", "translated_text", "TEXT"),
+    ("analysis_config", "output_language", "VARCHAR(32) DEFAULT 'english'"),
 ]
 
 

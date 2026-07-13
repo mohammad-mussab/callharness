@@ -11,7 +11,7 @@ from .db import init_db
 from .routes import alerts, analytics, calls, config, evaluators
 from .schemas import HealthOut
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 

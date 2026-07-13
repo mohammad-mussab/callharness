@@ -18,8 +18,10 @@ OpenCall is the self-hosted alternative: send it your calls, and it gives you th
 - **Call explorer** — search transcripts, filter by outcome/sentiment, drill into any call with a synced audio player + turn-by-turn transcript with latency annotations
 - **Latency observability** — p50/p95/p99 response latency with per-turn STT / LLM / TTS component breakdowns; the Pipecat metrics observer captures these automatically
 - **Conversation-quality metrics** (no LLM needed) — interruptions, silence gaps, talk ratio, agent words-per-minute, monologue length, computed at ingest
-- **Alerting** — Slack or webhook notifications for negative-sentiment calls, failed calls, keyword mentions, high-latency calls, and windowed success-rate/sentiment drops, with cooldowns and a full event log
-- **Custom evaluators** — user-authored LLM-as-judge criteria graded on every call, with pass-rate tracking
+- **Alerting** — Slack, email (SMTP), or webhook notifications for negative-sentiment calls, failed calls, keyword mentions, high-latency calls, and windowed success-rate/sentiment drops, with cooldowns and a full event log
+- **Custom checks** — plain-English pass/fail criteria graded on every call by an LLM judge, with pass-rate tracking
+- **Multilingual** — calls in any language: analysis output in the language you choose (e.g. Italian calls, English summaries), automatic language detection, and one-click cached transcript translation
+- **Multi-agent / multi-region** — tag calls with an agent id per region/VM and compare regions side-by-side on the dashboard
 - **Self-hosted** — SQLite + local files by default, Postgres via Docker Compose; your call data never leaves your infrastructure
 
 ## Quickstart (local dev)
@@ -96,8 +98,11 @@ Then upload the recording (optional): `POST /api/v1/calls/{id}/recording` (multi
 | `OPENCALL_LLM_PROVIDER` | `auto` | `openai`, `anthropic`, or `none` |
 | `OPENCALL_LLM_MODEL` | per provider | Override the analysis model |
 | `OPENCALL_LLM_BASE_URL` | OpenAI | Point at Ollama/vLLM for fully local analysis |
+| `OPENCALL_SMTP_HOST` / `OPENCALL_SMTP_PORT` | *(unset)* / `587` | SMTP server for the email alert channel |
+| `OPENCALL_SMTP_USER` / `OPENCALL_SMTP_PASSWORD` | *(unset)* | SMTP login (for Gmail use an app password) |
+| `OPENCALL_SMTP_FROM` | *(unset)* | From address for alert emails |
 
-Analysis behavior (what to summarize, success criteria, extraction fields) is configured in the dashboard under **Analysis Settings**, or via `PUT /api/v1/config/analysis`.
+Analysis behavior (what to summarize, success criteria, extraction fields, output language) is configured in the dashboard under **Analysis Settings**, or via `PUT /api/v1/config/analysis`.
 
 ## Architecture
 

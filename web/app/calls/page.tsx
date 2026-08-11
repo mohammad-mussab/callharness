@@ -4,7 +4,8 @@ import { useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
 import { fetcher, type CallList, type Overview } from "@/lib/api";
-import { formatDate, formatDuration, titleCase } from "@/lib/format";
+import { formatDate, formatDuration } from "@/lib/format";
+import { label } from "@/lib/labels";
 import {
   EndReasonBadge,
   NonCompletionReasonBadge,
@@ -94,7 +95,7 @@ export default function CallsPage() {
           >
             <option value="">Any transfer reason</option>
             {overview!.transfer_reason_breakdown.map((r) => (
-              <option key={r.reason} value={r.reason}>{titleCase(r.reason)} ({r.count})</option>
+              <option key={r.reason} value={r.reason}>{label(r.reason)} ({r.count})</option>
             ))}
           </select>
         )}
@@ -106,7 +107,7 @@ export default function CallsPage() {
           >
             <option value="">Any non-completion reason</option>
             {overview!.non_completion_reason_breakdown.map((r) => (
-              <option key={r.reason} value={r.reason}>{titleCase(r.reason)} ({r.count})</option>
+              <option key={r.reason} value={r.reason}>{label(r.reason)} ({r.count})</option>
             ))}
           </select>
         )}

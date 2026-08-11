@@ -4,7 +4,8 @@ import { useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
 import { fetcher, type Disputes, type Overview } from "@/lib/api";
-import { formatDate, formatDuration, titleCase } from "@/lib/format";
+import { formatDate, formatDuration } from "@/lib/format";
+import { label, labelWithKey } from "@/lib/labels";
 import { OutcomeBadge } from "@/components/Badges";
 
 const selectClass =
@@ -155,9 +156,9 @@ export default function DisputesPage() {
                           : "border-amber-900/60 bg-amber-950/20 text-amber-300"
                       }`}
                     >
-                      <span className="font-medium">{titleCase(m.agent)}</span>
+                      <span className="font-medium">{label(m.agent)}</span>
                       <span className="mx-1.5 text-zinc-600">→</span>
-                      <span className="font-medium">{titleCase(m.callharness)}</span>
+                      <span className="font-medium">{label(m.callharness)}</span>
                       <span className="ml-2 tabular-nums text-zinc-500">{m.count}</span>
                     </div>
                   );
@@ -218,7 +219,7 @@ export default function DisputesPage() {
                       <OutcomeBadge outcome={c.callharness_outcome} />
                       {c.callharness_reason && (
                         <span className="text-xs text-zinc-400">
-                          {titleCase(c.callharness_reason)}
+                          {labelWithKey(c.callharness_reason)}
                         </span>
                       )}
                     </div>

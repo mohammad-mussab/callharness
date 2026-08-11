@@ -1,4 +1,5 @@
 import { titleCase } from "@/lib/format";
+import { label, labelWithKey } from "@/lib/labels";
 
 const badgeBase =
   "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium";
@@ -35,8 +36,8 @@ export function StatusBadge({ status }: { status: string }) {
 export function EndReasonBadge({ reason }: { reason: string | null }) {
   if (!reason) return <span className="text-zinc-500 text-xs">—</span>;
   return (
-    <span className={`${badgeBase} bg-zinc-700/40 text-zinc-300`}>
-      {titleCase(reason)}
+    <span className={`${badgeBase} bg-zinc-700/40 text-zinc-300`} title={labelWithKey(reason)}>
+      {label(reason)}
     </span>
   );
 }
@@ -69,10 +70,13 @@ export function OutcomeBadge({ outcome }: { outcome: string | null }) {
 // matters when a label looks wrong, not on every row.
 type ReasonSource = "agent" | "llm" | null;
 
+// Hover shows the stored key alongside the English label, so a badge can always be
+// matched against the operational database that uses the original terminology.
 function sourceTitle(reason: string, source: ReasonSource) {
-  if (source === "agent") return `${reason} — classified by the agent at call end`;
-  if (source === "llm") return `${reason} — inferred by CallHarness's analysis`;
-  return reason;
+  const base = labelWithKey(reason);
+  if (source === "agent") return `${base} — classified by the agent at call end`;
+  if (source === "llm") return `${base} — inferred by CallHarness's analysis`;
+  return base;
 }
 
 export function TransferReasonBadge({
@@ -85,7 +89,7 @@ export function TransferReasonBadge({
   if (!reason) return null;
   return (
     <span className={`${badgeBase} bg-violet-500/15 text-violet-300`} title={sourceTitle(reason, source)}>
-      {titleCase(reason)}
+      {label(reason)}
     </span>
   );
 }
@@ -100,7 +104,7 @@ export function NonCompletionReasonBadge({
   if (!reason) return null;
   return (
     <span className={`${badgeBase} bg-amber-500/15 text-amber-300`} title={sourceTitle(reason, source)}>
-      {titleCase(reason)}
+      {label(reason)}
     </span>
   );
 }

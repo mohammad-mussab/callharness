@@ -25,10 +25,15 @@ def _build_call_payload(
 class CallHarnessClient:
     """Synchronous client. Suitable for scripts and batch imports."""
 
-    def __init__(self, base_url: str = "http://localhost:8010", api_key: str | None = None):
+    def __init__(
+        self,
+        base_url: str = "http://localhost:8010",
+        api_key: str | None = None,
+        timeout: float = 30.0,
+    ):
         self.base_url = base_url.rstrip("/")
         self._client = httpx.Client(
-            base_url=self.base_url, headers=_headers(api_key), timeout=30
+            base_url=self.base_url, headers=_headers(api_key), timeout=timeout
         )
 
     def ingest_call(
@@ -63,12 +68,21 @@ class CallHarnessClient:
 
 
 class AsyncCallHarnessClient:
-    """Async client. Use inside voice agent processes (Pipecat, LiveKit)."""
+    """Async client. Use inside voice agent processes (Pipecat, LiveKit).
 
-    def __init__(self, base_url: str = "http://localhost:8010", api_key: str | None = None):
+    `timeout` matters here: this usually runs during call teardown, so a slow or dead
+    CallHarness should cost seconds, not the 30s default.
+    """
+
+    def __init__(
+        self,
+        base_url: str = "http://localhost:8010",
+        api_key: str | None = None,
+        timeout: float = 30.0,
+    ):
         self.base_url = base_url.rstrip("/")
         self._client = httpx.AsyncClient(
-            base_url=self.base_url, headers=_headers(api_key), timeout=30
+            base_url=self.base_url, headers=_headers(api_key), timeout=timeout
         )
 
     async def ingest_call(

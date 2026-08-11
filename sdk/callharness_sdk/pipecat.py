@@ -72,10 +72,11 @@ def create_recorder(
     base_url: str = "http://localhost:8010",
     api_key: str | None = None,
     agent_id: str = "default",
+    timeout: float = 30.0,
     **kwargs: Any,
 ) -> PipecatCallRecorder:
     """Convenience factory: builds the client and recorder in one call."""
-    client = AsyncCallHarnessClient(base_url=base_url, api_key=api_key)
+    client = AsyncCallHarnessClient(base_url=base_url, api_key=api_key, timeout=timeout)
     return PipecatCallRecorder(client, agent_id=agent_id, **kwargs)
 
 

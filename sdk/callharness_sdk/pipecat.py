@@ -68,6 +68,44 @@ class PipecatCallRecorder(CallRecorder):
             self.add_turn(role=role, text=text, start_time=start_time)
 
 
+def attach_audio(recorder: Any, audio_buffer: Any) -> Any:
+    """Record the call's audio and upload it automatically at ``flush()``.
+
+    One line of integration::
+
+        from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
+        from callharness_sdk.pipecat import attach_audio
+
+        audio_buffer = AudioBufferProcessor(num_channels=2)
+        attach_audio(recorder, audio_buffer)
+        # ...put audio_buffer in the pipeline AFTER transport.output(), then:
+        await audio_buffer.start_recording()
+
+    Nothing else is needed — ``recorder.flush()`` finds the audio and uploads it.
+
+    TWO PLACEMENT RULES THAT DECIDE WHETHER THE RECORDING IS USEFUL
+
+    1. The processor must sit **after** ``transport.output()`` in the pipeline. Placed
+       earlier it records what the bot *intended* to say, so a sentence the caller
+       interrupted is captured in full even though they never heard it — and the
+       recording then disagrees with the transcript at exactly the moments you are
+       most likely to be investigating.
+
+    2. ``num_channels=2`` puts the caller on the left channel and the bot on the
+       right. Worth it: with a mono mix, overlapping speech is unusable precisely
+       when there was an interruption.
+
+    Some transports drop input audio unless STT passthrough is on, so if no audio
+    arrives this logs a warning at flush time rather than failing silently.
+    """
+
+    @audio_buffer.event_handler("on_audio_data")
+    async def _on_audio_data(processor: Any, audio: bytes, sample_rate: int, num_channels: int):
+        recorder.add_audio(audio, sample_rate, num_channels)
+
+    return audio_buffer
+
+
 def create_recorder(
     base_url: str = "http://localhost:8010",
     api_key: str | None = None,

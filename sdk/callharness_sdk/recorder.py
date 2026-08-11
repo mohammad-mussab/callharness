@@ -4,7 +4,9 @@ Collects transcript turns during a live call and uploads the finished call to
 CallHarness. The Pipecat integration in callharness_sdk.pipecat builds on this.
 """
 
+import io
 import logging
+import wave
 from datetime import datetime, timezone
 from typing import Any
 
@@ -36,6 +38,12 @@ class CallRecorder:
         self._flushed = False
         self._pending_components: dict[str, float] = {}
         self._pending_tool_calls: list[dict[str, Any]] = []
+        # Raw PCM accumulated from the pipeline; wrapped in a WAV header at flush().
+        # Kept as bytes rather than a file so nothing is written to the agent's disk —
+        # a voice agent container is usually ephemeral and often read-only.
+        self._audio = bytearray()
+        self._audio_sample_rate = 16000
+        self._audio_channels = 1
 
     def record_component_latency(self, component: str, ms: float) -> None:
         """Record STT/LLM/TTS latency for the *next* assistant turn.
@@ -51,6 +59,39 @@ class CallRecorder:
         self._pending_tool_calls.append(
             {"name": name, "arguments": arguments, "result": result, "success": success}
         )
+
+    def add_audio(self, pcm: bytes, sample_rate: int = 16000, num_channels: int = 1) -> None:
+        """Append raw PCM captured from the pipeline.
+
+        Safe to call repeatedly: Pipecat's AudioBufferProcessor fires once at
+        stop_recording() when buffer_size=0, but repeatedly while the call runs when
+        buffer_size is set, so chunks are appended rather than replaced.
+        """
+        if not pcm:
+            return
+        self._audio.extend(pcm)
+        self._audio_sample_rate = sample_rate or self._audio_sample_rate
+        self._audio_channels = num_channels or self._audio_channels
+
+    @property
+    def has_audio(self) -> bool:
+        return len(self._audio) > 0
+
+    def audio_wav(self) -> bytes | None:
+        """The accumulated audio as a playable WAV, or None if nothing was captured.
+
+        Uses the stdlib `wave` module — the PCM is already the right shape, so this
+        only adds a 44-byte header and the SDK stays dependency-free.
+        """
+        if not self._audio:
+            return None
+        buffer = io.BytesIO()
+        with wave.open(buffer, "wb") as wav:
+            wav.setnchannels(self._audio_channels)
+            wav.setsampwidth(2)  # AudioBufferProcessor emits 16-bit PCM
+            wav.setframerate(self._audio_sample_rate)
+            wav.writeframes(bytes(self._audio))
+        return buffer.getvalue()
 
     def add_turn(
         self,
@@ -145,12 +186,26 @@ class CallRecorder:
                 transfer_reason=transfer_reason,
                 non_completion_reason=non_completion_reason,
             )
+            # Audio captured via attach_audio() uploads itself, so the integrator
+            # never has to remember a second call. An explicit recording_path or
+            # recording_bytes still wins if one was passed.
             if recording_path:
                 await self.client.upload_recording(call["id"], recording_path)
             elif recording_bytes:
                 await self.client.upload_recording_bytes(
                     call["id"], recording_bytes, recording_filename
                 )
+            elif self.has_audio:
+                wav = self.audio_wav()
+                if wav:
+                    await self.client.upload_recording_bytes(
+                        call["id"], wav, recording_filename
+                    )
+                    logger.info(
+                        "CallHarness: uploaded %.1fs of audio for call %s",
+                        len(self._audio) / (self._audio_sample_rate * 2 * self._audio_channels),
+                        call["id"],
+                    )
             logger.info("CallHarness: uploaded call %s (%d turns)", call["id"], len(self.turns))
             return call
         except Exception as exc:  # noqa: BLE001 - never crash the host agent

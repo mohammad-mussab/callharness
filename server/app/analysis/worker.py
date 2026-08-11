@@ -6,6 +6,7 @@ No external queue needed; can be replaced by a dedicated worker service later.
 
 import asyncio
 import logging
+from datetime import timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -13,6 +14,7 @@ from sqlalchemy.orm import selectinload
 from ..config import settings
 from ..db import SessionLocal
 from ..models import AnalysisConfig, Call, utcnow
+from ..storage import delete_recording
 from ..taxonomy import DEFAULT_NON_COMPLETION_REASONS, DEFAULT_TRANSFER_REASONS
 from .alerts import check_call_alerts, check_window_alerts
 from .engine import analyze_call
@@ -41,6 +43,40 @@ async def get_or_create_config(session) -> AnalysisConfig:
     if changed:
         await session.commit()
     return config
+
+
+async def _expire_recordings() -> int:
+    """Delete recordings past the retention window. Returns how many were removed.
+
+    Only the audio file goes: the call, its transcript, tool calls and analysis are
+    kept indefinitely. Those are small and are what the dashboard is built on — it is
+    the audio that would otherwise fill the disk.
+    """
+    days = settings.recording_retention_days
+    if days <= 0:
+        return 0
+
+    cutoff = utcnow() - timedelta(days=days)
+    async with SessionLocal() as session:
+        rows = (
+            await session.execute(
+                select(Call).where(
+                    Call.recording_path.is_not(None), Call.started_at < cutoff
+                )
+            )
+        ).scalars().all()
+        if not rows:
+            return 0
+        for call in rows:
+            delete_recording(call.recording_path)
+            # Cleared even when the file was already gone, so has_recording stops
+            # promising audio the dashboard cannot play.
+            call.recording_path = None
+        await session.commit()
+    logger.info(
+        "Deleted %d recording(s) older than %d days (transcripts kept)", len(rows), days
+    )
+    return len(rows)
 
 
 async def _process_one(call_id: str) -> None:
@@ -122,6 +158,7 @@ async def run_worker(stop_event: asyncio.Event) -> None:
         settings.resolved_model if settings.resolved_provider != "none" else "-",
     )
     last_window_check = 0.0
+    last_recording_cleanup = 0.0
     while not stop_event.is_set():
         try:
             claimed = await _claim_pending(settings.analysis_concurrency)
@@ -138,6 +175,12 @@ async def run_worker(stop_event: asyncio.Event) -> None:
                     await check_window_alerts(session)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Window alert check failed: %s", exc)
+        if now - last_recording_cleanup >= settings.recording_cleanup_interval_seconds:
+            last_recording_cleanup = now
+            try:
+                await _expire_recordings()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Recording cleanup failed: %s", exc)
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=settings.analysis_poll_seconds)
         except asyncio.TimeoutError:

@@ -98,6 +98,40 @@ only depends on state (fatal error, transferred) that's already known live durin
 call, so it's correct regardless of teardown ordering. `observer.last_error` holds the
 most recent error message, useful to drop into `metadata` for debugging.
 
+## Call recording
+
+Two lines. The audio uploads itself when you `flush()` — there is no second call to
+remember:
+
+```python
+from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
+from callharness_sdk.pipecat import attach_audio
+
+audio_buffer = AudioBufferProcessor(num_channels=2)
+attach_audio(recorder, audio_buffer)
+
+pipeline = Pipeline([
+    transport.input(), stt, llm, tts,
+    transport.output(),
+    audio_buffer,          # ← AFTER transport.output()
+])
+await audio_buffer.start_recording()
+```
+
+Two placement details decide whether the recording is worth having:
+
+- **After `transport.output()`.** Placed earlier it records what the bot *intended* to
+  say, so a sentence the caller interrupted is captured in full even though nobody
+  heard it — and the recording then disagrees with the transcript at exactly the
+  moments you are most likely to be investigating.
+- **`num_channels=2`** puts the caller on the left and the bot on the right. With a
+  mono mix, overlapping speech is unusable precisely when there was an interruption.
+
+The dashboard plays it inline on the call page, and clicking a transcript line seeks
+the audio to that moment. Recordings expire on the server after
+`CALLHARNESS_RECORDING_RETENTION_DAYS` (default 30); transcripts and analysis are kept
+indefinitely.
+
 ## If your agent already has its own call pipeline
 
 Mature agents usually already collect a transcript, their own record of tool calls,

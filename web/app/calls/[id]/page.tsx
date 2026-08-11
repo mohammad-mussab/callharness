@@ -153,13 +153,26 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
       )}
 
       {call.has_recording && (
-        <audio
-          ref={audioRef}
-          controls
-          src={`/api/v1/calls/${call.id}/audio`}
-          className="w-full"
-          onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
-        />
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <div className="text-sm font-medium text-zinc-200">Call recording</div>
+            <div className="text-xs text-zinc-500">
+              Click any line in the transcript to jump to that moment
+            </div>
+          </div>
+          <audio
+            ref={audioRef}
+            controls
+            preload="metadata"
+            src={`/api/v1/calls/${call.id}/audio`}
+            className="w-full"
+            onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
+          />
+          <div className="mt-2 text-xs text-zinc-600">
+            Recordings are kept for a limited period and deleted automatically; the
+            transcript and analysis are kept indefinitely.
+          </div>
+        </div>
       )}
 
       {call.analysis_error && (

@@ -33,6 +33,15 @@ class Settings(BaseSettings):
     analysis_poll_seconds: float = 3.0
     analysis_concurrency: int = 2
 
+    # Days to keep call recordings before deleting them from disk. Audio is by far the
+    # largest thing this stores — a 50s stereo 16kHz WAV is ~3MB, so 1,000 calls/day is
+    # ~1TB/year without a limit, roughly 300x everything else combined. Deleting the
+    # file clears Call.recording_path; the call, transcript and analysis are kept
+    # forever. Set to 0 to keep recordings indefinitely (watch the disk).
+    recording_retention_days: int = 30
+    # How often the cleanup pass runs. Hourly is plenty for a daily-granularity policy.
+    recording_cleanup_interval_seconds: float = 3600.0
+
     # SMTP settings for the email alert channel (CALLHARNESS_SMTP_*).
     # Leave smtp_host unset to disable email delivery.
     smtp_host: str | None = None

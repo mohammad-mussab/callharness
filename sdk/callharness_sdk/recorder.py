@@ -1,22 +1,22 @@
 """Framework-agnostic call recorder.
 
 Collects transcript turns during a live call and uploads the finished call to
-OpenCall. The Pipecat integration in opencall_sdk.pipecat builds on this.
+CallHarness. The Pipecat integration in callharness_sdk.pipecat builds on this.
 """
 
 import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from .client import AsyncOpenCallClient
+from .client import AsyncCallHarnessClient
 
-logger = logging.getLogger("opencall.sdk")
+logger = logging.getLogger("callharness.sdk")
 
 
 class CallRecorder:
     def __init__(
         self,
-        client: AsyncOpenCallClient,
+        client: AsyncCallHarnessClient,
         agent_id: str = "default",
         external_id: str | None = None,
         direction: str = "inbound",
@@ -117,7 +117,7 @@ class CallRecorder:
         """Upload the call. Safe to call multiple times; only uploads once.
 
         `transfer_reason` / `non_completion_reason` are optional and only for agents
-        that already classify their own calls. Leave them unset and OpenCall infers
+        that already classify their own calls. Leave them unset and CallHarness infers
         the reason during analysis, using the taxonomy configured in the dashboard.
         When set, the value is authoritative and analysis will not overwrite it — so
         it should match one of the configured category keys.
@@ -126,7 +126,7 @@ class CallRecorder:
             return None
         self._flushed = True
         if not self.turns:
-            logger.info("OpenCall: no turns recorded, skipping upload")
+            logger.info("CallHarness: no turns recorded, skipping upload")
             return None
         ended_at = datetime.now(timezone.utc)
         try:
@@ -151,8 +151,8 @@ class CallRecorder:
                 await self.client.upload_recording_bytes(
                     call["id"], recording_bytes, recording_filename
                 )
-            logger.info("OpenCall: uploaded call %s (%d turns)", call["id"], len(self.turns))
+            logger.info("CallHarness: uploaded call %s (%d turns)", call["id"], len(self.turns))
             return call
         except Exception as exc:  # noqa: BLE001 - never crash the host agent
-            logger.warning("OpenCall: failed to upload call: %s", exc)
+            logger.warning("CallHarness: failed to upload call: %s", exc)
             return None

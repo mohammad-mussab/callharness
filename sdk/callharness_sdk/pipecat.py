@@ -1,14 +1,14 @@
-"""Pipecat integration for OpenCall.
+"""Pipecat integration for CallHarness.
 
 Usage — add ~6 lines to an existing Pipecat bot:
 
     from pipecat.processors.transcript_processor import TranscriptProcessor
-    from opencall_sdk import AsyncOpenCallClient
-    from opencall_sdk.pipecat import PipecatCallRecorder
+    from callharness_sdk import AsyncCallHarnessClient
+    from callharness_sdk.pipecat import PipecatCallRecorder
 
     transcript = TranscriptProcessor()          # put transcript.user() after STT
                                                 # and transcript.assistant() after TTS
-    client = AsyncOpenCallClient("http://localhost:8010")
+    client = AsyncCallHarnessClient("http://localhost:8010")
     recorder = PipecatCallRecorder(client, agent_id="my-agent")
     recorder.attach(transcript)
 
@@ -24,10 +24,10 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from .client import AsyncOpenCallClient
+from .client import AsyncCallHarnessClient
 from .recorder import CallRecorder
 
-logger = logging.getLogger("opencall.sdk.pipecat")
+logger = logging.getLogger("callharness.sdk.pipecat")
 
 
 def _parse_timestamp(value: Any) -> datetime | None:
@@ -75,7 +75,7 @@ def create_recorder(
     **kwargs: Any,
 ) -> PipecatCallRecorder:
     """Convenience factory: builds the client and recorder in one call."""
-    client = AsyncOpenCallClient(base_url=base_url, api_key=api_key)
+    client = AsyncCallHarnessClient(base_url=base_url, api_key=api_key)
     return PipecatCallRecorder(client, agent_id=agent_id, **kwargs)
 
 
@@ -98,7 +98,7 @@ try:  # Observers require pipecat to be installed
     from pipecat.metrics.metrics import TTFBMetricsData
     from pipecat.observers.base_observer import BaseObserver, FramePushed
 
-    class OpenCallMetricsObserver(BaseObserver):
+    class CallHarnessMetricsObserver(BaseObserver):
         """Pipecat observer that captures per-service TTFB metrics and feeds
         them to the recorder, so assistant turns get STT/LLM/TTS latency.
 
@@ -106,7 +106,7 @@ try:  # Observers require pipecat to be installed
             task = PipelineTask(
                 pipeline,
                 params=PipelineParams(enable_metrics=True),
-                observers=[OpenCallMetricsObserver(recorder)],
+                observers=[CallHarnessMetricsObserver(recorder)],
             )
         """
 
@@ -133,9 +133,9 @@ try:  # Observers require pipecat to be installed
                 elif "tts" in processor:
                     self._recorder.record_component_latency("tts", ms)
 
-    class OpenCallFrameObserver(BaseObserver):
+    class CallHarnessFrameObserver(BaseObserver):
         """All-in-one Pipecat observer for pipelines that don't use
-        TranscriptProcessor. Captures everything OpenCall needs at the frame
+        TranscriptProcessor. Captures everything CallHarness needs at the frame
         level:
 
         - user turns from TranscriptionFrame (at the STT service)
@@ -154,7 +154,7 @@ try:  # Observers require pipecat to be installed
 
         Usage:
             recorder = create_recorder("http://localhost:8010", agent_id="my-agent")
-            observer = OpenCallFrameObserver(
+            observer = CallHarnessFrameObserver(
                 recorder, stt=stt, tts=tts, transfer_tool_names={"transfer_to_human"}
             )
             # add `observer` to your PipelineTask/PipelineWorker observers, then
@@ -350,14 +350,14 @@ try:  # Observers require pipecat to be installed
 
 except ImportError:  # pragma: no cover - pipecat not installed
 
-    class OpenCallMetricsObserver:  # type: ignore[no-redef]
+    class CallHarnessMetricsObserver:  # type: ignore[no-redef]
         def __init__(self, *args: Any, **kwargs: Any):
             raise ImportError(
-                "OpenCallMetricsObserver requires pipecat: pip install pipecat-ai"
+                "CallHarnessMetricsObserver requires pipecat: pip install pipecat-ai"
             )
 
-    class OpenCallFrameObserver:  # type: ignore[no-redef]
+    class CallHarnessFrameObserver:  # type: ignore[no-redef]
         def __init__(self, *args: Any, **kwargs: Any):
             raise ImportError(
-                "OpenCallFrameObserver requires pipecat: pip install pipecat-ai"
+                "CallHarnessFrameObserver requires pipecat: pip install pipecat-ai"
             )

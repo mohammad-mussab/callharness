@@ -27,7 +27,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="OpenCall",
+    title="CallHarness",
     description="Open-source call analytics for voice AI agents",
     version=VERSION,
     lifespan=lifespan,

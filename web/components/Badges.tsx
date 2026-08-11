@@ -64,14 +64,14 @@ export function OutcomeBadge({ outcome }: { outcome: string | null }) {
 
 // Shown alongside OutcomeBadge (which already says "Transferred"/"Non-completed"),
 // so these only need to add the *reason*, not repeat the outcome itself.
-// `source` says who decided: the agent sent it with the call, or OpenCall's
+// `source` says who decided: the agent sent it with the call, or CallHarness's
 // analysis inferred it. Surfaced on hover rather than as a second badge — it
 // matters when a label looks wrong, not on every row.
 type ReasonSource = "agent" | "llm" | null;
 
 function sourceTitle(reason: string, source: ReasonSource) {
   if (source === "agent") return `${reason} — classified by the agent at call end`;
-  if (source === "llm") return `${reason} — inferred by OpenCall's analysis`;
+  if (source === "llm") return `${reason} — inferred by CallHarness's analysis`;
   return reason;
 }
 

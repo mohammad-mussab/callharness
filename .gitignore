@@ -20,3 +20,14 @@ next-env.d.ts
 
 # Logs from locally-run dev servers
 *.log
+
+# Local working notes — these reference client names and are not part of the project
+rename-opencall.txt
+sdk/making-callharness.txt
+
+# Stray lockfile: there is no package.json at the repo root (web/ has its own)
+/package-lock.json
+
+
+tmp/
+Claude.md

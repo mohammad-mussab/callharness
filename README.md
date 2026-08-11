@@ -1,10 +1,10 @@
-# OpenCall
+# CallHarness
 
 **Open-source call analytics for voice AI agents.**
 
 You built a voice agent with [Pipecat](https://github.com/pipecat-ai/pipecat), LiveKit, or your own stack. It's taking hundreds or thousands of calls a day — and you have no idea which calls succeed, where callers get frustrated, or why they hang up. Platforms like Retell and Vapi bundle this analysis into their closed ecosystems; standalone tools (Coval, Hamming, Roark, Cekura) are paid SaaS.
 
-OpenCall is the self-hosted alternative: send it your calls, and it gives you the same post-call analysis loop those platforms offer.
+CallHarness is the self-hosted alternative: send it your calls, and it gives you the same post-call analysis loop those platforms offer.
 
 ## Features
 
@@ -59,7 +59,7 @@ Dashboard at `http://localhost:3010`, API at `http://localhost:8010` (OpenAPI do
 
 ```python
 from pipecat.processors.transcript_processor import TranscriptProcessor
-from opencall_sdk.pipecat import create_recorder
+from callharness_sdk.pipecat import create_recorder
 
 transcript = TranscriptProcessor()   # transcript.user() after STT, transcript.assistant() after TTS
 recorder = create_recorder("http://localhost:8010", agent_id="my-agent")
@@ -91,16 +91,16 @@ Then upload the recording (optional): `POST /api/v1/calls/{id}/recording` (multi
 
 | Env var | Default | Description |
 |---|---|---|
-| `OPENCALL_DATABASE_URL` | `sqlite+aiosqlite:///./opencall.db` | SQLAlchemy URL; use `postgresql+asyncpg://...` for Postgres |
-| `OPENCALL_DATA_DIR` | `./data` | Where call recordings are stored |
-| `OPENCALL_API_KEY` | *(unset)* | If set, write endpoints require this key |
+| `CALLHARNESS_DATABASE_URL` | `sqlite+aiosqlite:///./callharness.db` | SQLAlchemy URL; use `postgresql+asyncpg://...` for Postgres |
+| `CALLHARNESS_DATA_DIR` | `./data` | Where call recordings are stored |
+| `CALLHARNESS_API_KEY` | *(unset)* | If set, write endpoints require this key |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | *(unset)* | Enables LLM post-call analysis |
-| `OPENCALL_LLM_PROVIDER` | `auto` | `openai`, `anthropic`, or `none` |
-| `OPENCALL_LLM_MODEL` | per provider | Override the analysis model |
-| `OPENCALL_LLM_BASE_URL` | OpenAI | Point at Ollama/vLLM for fully local analysis |
-| `OPENCALL_SMTP_HOST` / `OPENCALL_SMTP_PORT` | *(unset)* / `587` | SMTP server for the email alert channel |
-| `OPENCALL_SMTP_USER` / `OPENCALL_SMTP_PASSWORD` | *(unset)* | SMTP login (for Gmail use an app password) |
-| `OPENCALL_SMTP_FROM` | *(unset)* | From address for alert emails |
+| `CALLHARNESS_LLM_PROVIDER` | `auto` | `openai`, `anthropic`, or `none` |
+| `CALLHARNESS_LLM_MODEL` | per provider | Override the analysis model |
+| `CALLHARNESS_LLM_BASE_URL` | OpenAI | Point at Ollama/vLLM for fully local analysis |
+| `CALLHARNESS_SMTP_HOST` / `CALLHARNESS_SMTP_PORT` | *(unset)* / `587` | SMTP server for the email alert channel |
+| `CALLHARNESS_SMTP_USER` / `CALLHARNESS_SMTP_PASSWORD` | *(unset)* | SMTP login (for Gmail use an app password) |
+| `CALLHARNESS_SMTP_FROM` | *(unset)* | From address for alert emails |
 
 Analysis behavior (what to summarize, success criteria, extraction fields, output language) is configured in the dashboard under **Analysis Settings**, or via `PUT /api/v1/config/analysis`.
 
@@ -108,7 +108,7 @@ Analysis behavior (what to summarize, success criteria, extraction fields, outpu
 
 ```
 voice agent (Pipecat / LiveKit / custom)
-        │  opencall-sdk / REST
+        │  callharness-sdk / REST
         ▼
 FastAPI server ──► SQLite / Postgres
         │              ▲

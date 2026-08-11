@@ -61,7 +61,7 @@ class Call(Base):
     transfer_reason: Mapped[str | None] = mapped_column(String(32), index=True)
     non_completion_reason: Mapped[str | None] = mapped_column(String(32), index=True)
     # Where those two labels came from: "agent" (supplied at ingest by an agent that
-    # classifies itself) or "llm" (OpenCall's own analysis pass). Agent-supplied wins
+    # classifies itself) or "llm" (CallHarness's own analysis pass). Agent-supplied wins
     # and is never overwritten by analysis — see analysis/engine.py apply_result().
     reason_source: Mapped[str | None] = mapped_column(String(16))
 
@@ -93,7 +93,7 @@ class Turn(Base):
     tts_ttfb_ms: Mapped[float | None] = mapped_column(Float)  # TTS time-to-first-byte
     interrupted: Mapped[bool] = mapped_column(Boolean, default=False)
     # [{"name": str, "arguments": Any, "result": Any, "success": bool}, ...] — function/tool
-    # calls the agent made while producing this turn (populated by OpenCallFrameObserver)
+    # calls the agent made while producing this turn (populated by CallHarnessFrameObserver)
     tool_calls: Mapped[list | None] = mapped_column(JSON, default=None)
 
     call: Mapped[Call] = relationship(back_populates="turns")

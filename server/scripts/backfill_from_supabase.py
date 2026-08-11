@@ -1,10 +1,10 @@
-"""Backfill historical calls from a Supabase table into OpenCall for analysis.
+"""Backfill historical calls from a Supabase table into CallHarness for analysis.
 
 Your production agent may have been logging calls to Supabase (see the agent's
-own `db.py` / `log_call()`) long before it was wired up to OpenCall's live
+own `db.py` / `log_call()`) long before it was wired up to CallHarness's live
 ingestion API. This script pulls a *bounded* window of those historical rows
 (by age and/or count, so you control LLM analysis cost) and re-ingests them
-through OpenCall's normal `POST /api/v1/calls` endpoint — the existing
+through CallHarness's normal `POST /api/v1/calls` endpoint — the existing
 analysis worker then picks them up exactly like a live call. Safe to re-run:
 ingestion is idempotent on `external_id`, so already-imported rows are skipped
 server-side instead of duplicated.
@@ -22,7 +22,7 @@ Usage (from the server/ directory, with the venv activated):
         --supabase-url https://xxxx.supabase.co --supabase-key <service-or-anon-key> \\
         --days 10 --limit 1000 --dry-run
 
-Drop --dry-run to actually POST to OpenCall once the parsed output looks right.
+Drop --dry-run to actually POST to CallHarness once the parsed output looks right.
 """
 
 import argparse
@@ -41,7 +41,7 @@ TRANSCRIPT_COLUMN = "transcript"
 PHONE_COLUMN = "lead_phone"
 ASSISTANT_LABEL = "Ava"
 CALLER_LABEL = "Caller"
-# Columns to carry over into the OpenCall call's `metadata` (rest are ignored)
+# Columns to carry over into the CallHarness call's `metadata` (rest are ignored)
 METADATA_COLUMNS = [
     "lead_name",
     "lead_type",
@@ -114,12 +114,12 @@ async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--supabase-url", default=os.environ.get("SUPABASE_URL"))
     parser.add_argument("--supabase-key", default=os.environ.get("SUPABASE_KEY"))
-    parser.add_argument("--opencall-url", default=os.environ.get("OPENCALL_URL", "http://localhost:8010"))
-    parser.add_argument("--opencall-api-key", default=os.environ.get("OPENCALL_API_KEY"))
-    parser.add_argument("--agent-id", default=os.environ.get("OPENCALL_AGENT_ID", "default"))
+    parser.add_argument("--callharness-url", default=os.environ.get("CALLHARNESS_URL", "http://localhost:8010"))
+    parser.add_argument("--callharness-api-key", default=os.environ.get("CALLHARNESS_API_KEY"))
+    parser.add_argument("--agent-id", default=os.environ.get("CALLHARNESS_AGENT_ID", "default"))
     parser.add_argument("--days", type=int, default=10, help="Only import rows from the last N days")
     parser.add_argument("--limit", type=int, default=1000, help="Max rows to import in this run")
-    parser.add_argument("--dry-run", action="store_true", help="Parse and print, don't POST to OpenCall")
+    parser.add_argument("--dry-run", action="store_true", help="Parse and print, don't POST to CallHarness")
     args = parser.parse_args()
 
     if not (args.supabase_url and args.supabase_key):
@@ -134,8 +134,8 @@ async def main() -> None:
     print(f"Fetched {len(rows)} row(s) from {TABLE} since {since_iso}")
 
     imported = skipped = failed = 0
-    opencall_headers = {"x-api-key": args.opencall_api_key} if args.opencall_api_key else {}
-    async with httpx.AsyncClient(base_url=args.opencall_url, headers=opencall_headers, timeout=30) as oc_client:
+    callharness_headers = {"x-api-key": args.callharness_api_key} if args.callharness_api_key else {}
+    async with httpx.AsyncClient(base_url=args.callharness_url, headers=callharness_headers, timeout=30) as oc_client:
         for row in rows:
             payload = build_payload(row, args.agent_id)
             if payload is None:

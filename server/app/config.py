@@ -5,9 +5,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_prefix="OPENCALL_", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", env_prefix="CALLHARNESS_", extra="ignore")
 
-    database_url: str = "sqlite+aiosqlite:///./opencall.db"
+    database_url: str = "sqlite+aiosqlite:///./callharness.db"
     data_dir: str = "./data"
 
     # Optional static API key. When set, ingestion/mutation endpoints require
@@ -22,18 +22,18 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.openai.com/v1"
     openai_api_key: str | None = Field(
         default=None,
-        validation_alias=AliasChoices("OPENCALL_OPENAI_API_KEY", "OPENAI_API_KEY"),
+        validation_alias=AliasChoices("CALLHARNESS_OPENAI_API_KEY", "OPENAI_API_KEY"),
     )
     anthropic_api_key: str | None = Field(
         default=None,
-        validation_alias=AliasChoices("OPENCALL_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"),
+        validation_alias=AliasChoices("CALLHARNESS_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"),
     )
 
     analysis_enabled: bool = True
     analysis_poll_seconds: float = 3.0
     analysis_concurrency: int = 2
 
-    # SMTP settings for the email alert channel (OPENCALL_SMTP_*).
+    # SMTP settings for the email alert channel (CALLHARNESS_SMTP_*).
     # Leave smtp_host unset to disable email delivery.
     smtp_host: str | None = None
     smtp_port: int = 587

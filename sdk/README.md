@@ -1,19 +1,19 @@
-# opencall-sdk
+# callharness-sdk
 
-Python SDK for [OpenCall](https://github.com/opencall) — open-source call analytics for voice AI agents.
+Python SDK for [CallHarness](https://github.com/callharness) — open-source call analytics for voice AI agents.
 
 ## Install
 
 ```bash
-pip install opencall-sdk
+pip install callharness-sdk
 ```
 
 ## Direct ingestion
 
 ```python
-from opencall_sdk import OpenCallClient
+from callharness_sdk import CallHarnessClient
 
-client = OpenCallClient("http://localhost:8010")
+client = CallHarnessClient("http://localhost:8010")
 call = client.ingest_call(
     agent_id="my-agent",
     end_reason="completed",
@@ -29,7 +29,7 @@ client.upload_recording(call["id"], "recording.wav")
 
 ```python
 from pipecat.processors.transcript_processor import TranscriptProcessor
-from opencall_sdk.pipecat import create_recorder
+from callharness_sdk.pipecat import create_recorder
 
 transcript = TranscriptProcessor()
 recorder = create_recorder("http://localhost:8010", agent_id="my-agent")
@@ -43,12 +43,12 @@ await recorder.flush(end_reason="completed")
 To capture per-turn STT/LLM/TTS latency, add the metrics observer to your task:
 
 ```python
-from opencall_sdk.pipecat import OpenCallMetricsObserver
+from callharness_sdk.pipecat import CallHarnessMetricsObserver
 
 task = PipelineTask(
     pipeline,
     params=PipelineParams(enable_metrics=True),
-    observers=[OpenCallMetricsObserver(recorder)],
+    observers=[CallHarnessMetricsObserver(recorder)],
 )
 ```
 
@@ -60,10 +60,10 @@ turns, end-to-end response latency, STT/LLM/TTS components, interruptions, tool 
 transfers, and a deterministic `end_reason`, all from one observer:
 
 ```python
-from opencall_sdk.pipecat import OpenCallFrameObserver, create_recorder
+from callharness_sdk.pipecat import CallHarnessFrameObserver, create_recorder
 
 recorder = create_recorder("http://localhost:8010", agent_id="my-agent")
-observer = OpenCallFrameObserver(
+observer = CallHarnessFrameObserver(
     recorder, stt=stt, tts=tts, transfer_tool_names={"transfer_to_human"}
 )
 # add `observer` to your PipelineTask/PipelineWorker observers, then on call end:

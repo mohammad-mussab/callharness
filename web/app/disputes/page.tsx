@@ -62,8 +62,8 @@ export default function DisputesPage() {
       <div>
         <h1 className="text-xl font-semibold text-zinc-100">Disputed Calls</h1>
         <p className="max-w-3xl text-sm text-zinc-500">
-          Calls where your agent&apos;s own verdict and OpenCall&apos;s analysis disagree.
-          Your agent judges from the transcript alone; OpenCall also sees the tool calls
+          Calls where your agent&apos;s own verdict and CallHarness&apos;s analysis disagree.
+          Your agent judges from the transcript alone; CallHarness also sees the tool calls
           and whether they failed. When the two differ, one of them is wrong — and these
           are the calls worth listening to.
         </p>
@@ -95,7 +95,7 @@ export default function DisputesPage() {
           <p className="mx-auto mt-2 max-w-lg text-sm text-zinc-500">
             A call can only be compared when the agent sends its own verdict as{" "}
             <code className="text-zinc-400">agent_esito</code> in the call metadata
-            <em> and</em> OpenCall has finished analysing it.
+            <em> and</em> CallHarness has finished analysing it.
           </p>
         </div>
       ) : (
@@ -124,7 +124,7 @@ export default function DisputesPage() {
             <Stat
               label="Overcounted"
               value={data ? String(data.overcounted) : "—"}
-              hint="agent said completed, OpenCall didn't"
+              hint="agent said completed, CallHarness didn't"
               tone={data && data.overcounted > 0 ? "bad" : "normal"}
             />
           </div>
@@ -133,7 +133,7 @@ export default function DisputesPage() {
             <div className="rounded-xl border border-red-900/60 bg-red-950/20 p-4 text-sm text-red-200">
               <strong className="font-semibold">{data.overcounted}</strong> call
               {data.overcounted === 1 ? " was" : "s were"} reported as completed by the
-              agent but judged otherwise by OpenCall. This is the direction that inflates
+              agent but judged otherwise by CallHarness. This is the direction that inflates
               your success rate — these calls are never reviewed by anyone today.
             </div>
           )}
@@ -141,14 +141,14 @@ export default function DisputesPage() {
           {data && data.matrix.length > 0 && (
             <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
               <div className="mb-3 text-sm font-medium text-zinc-200">
-                Agent verdict → OpenCall verdict
+                Agent verdict → CallHarness verdict
               </div>
               <div className="flex flex-wrap gap-2">
                 {data.matrix.map((m) => {
-                  const agree = m.agent === m.opencall;
+                  const agree = m.agent === m.callharness;
                   return (
                     <div
-                      key={`${m.agent}-${m.opencall}`}
+                      key={`${m.agent}-${m.callharness}`}
                       className={`rounded-lg border px-3 py-2 text-xs ${
                         agree
                           ? "border-zinc-800 bg-zinc-900 text-zinc-400"
@@ -157,7 +157,7 @@ export default function DisputesPage() {
                     >
                       <span className="font-medium">{titleCase(m.agent)}</span>
                       <span className="mx-1.5 text-zinc-600">→</span>
-                      <span className="font-medium">{titleCase(m.opencall)}</span>
+                      <span className="font-medium">{titleCase(m.callharness)}</span>
                       <span className="ml-2 tabular-nums text-zinc-500">{m.count}</span>
                     </div>
                   );
@@ -212,13 +212,13 @@ export default function DisputesPage() {
                   </div>
                   <div className="rounded-lg border border-zinc-800 bg-zinc-950/50 p-3">
                     <div className="text-xs uppercase tracking-wide text-zinc-500">
-                      OpenCall said
+                      CallHarness said
                     </div>
                     <div className="mt-1 flex items-center gap-2">
-                      <OutcomeBadge outcome={c.opencall_outcome} />
-                      {c.opencall_reason && (
+                      <OutcomeBadge outcome={c.callharness_outcome} />
+                      {c.callharness_reason && (
                         <span className="text-xs text-zinc-400">
-                          {titleCase(c.opencall_reason)}
+                          {titleCase(c.callharness_reason)}
                         </span>
                       )}
                     </div>

@@ -181,8 +181,8 @@ export default function AlertsPage() {
           </div>
           {form.channel === "email" && (
             <p className="text-xs text-zinc-500">
-              Email needs SMTP configured on the server once: set OPENCALL_SMTP_HOST,
-              OPENCALL_SMTP_USER, OPENCALL_SMTP_PASSWORD and OPENCALL_SMTP_FROM in the
+              Email needs SMTP configured on the server once: set CALLHARNESS_SMTP_HOST,
+              CALLHARNESS_SMTP_USER, CALLHARNESS_SMTP_PASSWORD and CALLHARNESS_SMTP_FROM in the
               server&apos;s .env (for Gmail: smtp.gmail.com with an app password).
             </p>
           )}

@@ -18,7 +18,7 @@ from .alerts import check_call_alerts, check_window_alerts
 from .engine import analyze_call
 from .evaluators import run_evaluators
 
-logger = logging.getLogger("opencall.worker")
+logger = logging.getLogger("callharness.worker")
 
 WINDOW_ALERT_INTERVAL_SECONDS = 60.0
 
@@ -114,7 +114,7 @@ async def _claim_pending(limit: int) -> list[str]:
 
 async def run_worker(stop_event: asyncio.Event) -> None:
     if not settings.analysis_enabled:
-        logger.info("Analysis worker disabled (OPENCALL_ANALYSIS_ENABLED=false)")
+        logger.info("Analysis worker disabled (CALLHARNESS_ANALYSIS_ENABLED=false)")
         return
     logger.info(
         "Analysis worker started (provider=%s, model=%s)",

@@ -3,7 +3,7 @@ import Link from "next/link";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "OpenCall — Call Analytics",
+  title: "CallHarness — Call Analytics",
   description: "Open-source call analytics for voice AI agents",
 };
 
@@ -25,9 +25,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <aside className="hidden w-56 shrink-0 border-r border-zinc-800 bg-zinc-950 p-4 md:block">
             <Link href="/" className="flex items-center gap-2 px-2 py-1">
               <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-500 text-sm font-bold text-white">
-                O
+                C
               </span>
-              <span className="text-lg font-semibold text-zinc-100">OpenCall</span>
+              <span className="text-lg font-semibold text-zinc-100">CallHarness</span>
             </Link>
             <nav className="mt-6 space-y-1">
               {nav.map((item) => (

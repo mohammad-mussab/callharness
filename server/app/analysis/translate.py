@@ -10,7 +10,7 @@ import logging
 from ..models import Call
 from .llm import chat_json
 
-logger = logging.getLogger("opencall.translate")
+logger = logging.getLogger("callharness.translate")
 
 TRANSLATE_SYSTEM_PROMPT = """You are a professional translator for phone call transcripts. \
 You are given numbered lines from a call. Translate each line into the target language, \

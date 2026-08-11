@@ -1,4 +1,4 @@
-"""HTTP clients for the OpenCall ingestion API."""
+"""HTTP clients for the CallHarness ingestion API."""
 
 from pathlib import Path
 from typing import Any
@@ -22,7 +22,7 @@ def _build_call_payload(
     return _clean({"agent_id": agent_id, "turns": turns, **kwargs})
 
 
-class OpenCallClient:
+class CallHarnessClient:
     """Synchronous client. Suitable for scripts and batch imports."""
 
     def __init__(self, base_url: str = "http://localhost:8010", api_key: str | None = None):
@@ -62,7 +62,7 @@ class OpenCallClient:
         self._client.close()
 
 
-class AsyncOpenCallClient:
+class AsyncCallHarnessClient:
     """Async client. Use inside voice agent processes (Pipecat, LiveKit)."""
 
     def __init__(self, base_url: str = "http://localhost:8010", api_key: str | None = None):

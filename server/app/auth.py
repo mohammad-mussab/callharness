@@ -9,7 +9,7 @@ async def require_api_key(
 ) -> None:
     """Optional static API key check for write endpoints.
 
-    Auth is disabled unless OPENCALL_API_KEY is set (self-hosted default).
+    Auth is disabled unless CALLHARNESS_API_KEY is set (self-hosted default).
     """
     if not settings.api_key:
         return

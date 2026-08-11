@@ -1,10 +1,10 @@
-"""Example: Pipecat voice bot with OpenCall analytics.
+"""Example: Pipecat voice bot with CallHarness analytics.
 
 This is a standard Pipecat cascading bot (Deepgram STT -> OpenAI LLM ->
-Cartesia TTS) with OpenCall added. The OpenCall-specific lines are marked
-with `# <-- OpenCall`.
+Cartesia TTS) with CallHarness added. The CallHarness-specific lines are marked
+with `# <-- CallHarness`.
 
-Requires: pip install pipecat-ai[daily,deepgram,openai,cartesia] opencall-sdk
+Requires: pip install pipecat-ai[daily,deepgram,openai,cartesia] callharness-sdk
 """
 
 import asyncio
@@ -21,7 +21,7 @@ from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.services.daily import DailyParams, DailyTransport
 
-from opencall_sdk.pipecat import OpenCallMetricsObserver, create_recorder  # <-- OpenCall
+from callharness_sdk.pipecat import CallHarnessMetricsObserver, create_recorder  # <-- CallHarness
 
 SYSTEM_PROMPT = "You are a friendly receptionist for Brightsmile Dental. Keep answers short."
 
@@ -43,12 +43,12 @@ async def main():
 
     transcript = TranscriptProcessor()
 
-    recorder = create_recorder(                                    # <-- OpenCall
-        base_url=os.environ.get("OPENCALL_URL", "http://localhost:8010"),
-        api_key=os.environ.get("OPENCALL_API_KEY"),
+    recorder = create_recorder(                                    # <-- CallHarness
+        base_url=os.environ.get("CALLHARNESS_URL", "http://localhost:8010"),
+        api_key=os.environ.get("CALLHARNESS_API_KEY"),
         agent_id="dental-receptionist",
     )
-    recorder.attach(transcript)                                    # <-- OpenCall
+    recorder.attach(transcript)                                    # <-- CallHarness
 
     pipeline = Pipeline(
         [
@@ -67,7 +67,7 @@ async def main():
     task = PipelineTask(
         pipeline,
         params=PipelineParams(allow_interruptions=True, enable_metrics=True),
-        observers=[OpenCallMetricsObserver(recorder)],           # <-- OpenCall
+        observers=[CallHarnessMetricsObserver(recorder)],           # <-- CallHarness
     )
 
     @transport.event_handler("on_participant_left")
@@ -77,7 +77,7 @@ async def main():
     runner = PipelineRunner()
     await runner.run(task)
 
-    await recorder.flush(end_reason="completed")                   # <-- OpenCall
+    await recorder.flush(end_reason="completed")                   # <-- CallHarness
 
 
 if __name__ == "__main__":

@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..config import settings
 from ..models import AlertEvent, AlertRule, Call, utcnow
 
-logger = logging.getLogger("opencall.alerts")
+logger = logging.getLogger("callharness.alerts")
 
 PER_CALL_TRIGGERS = {
     "negative_sentiment_call",
@@ -41,7 +41,7 @@ def _in_cooldown(rule: AlertRule) -> bool:
 def _send_email_sync(recipients: list[str], subject: str, body: str) -> None:
     msg = EmailMessage()
     msg["Subject"] = subject
-    msg["From"] = settings.smtp_from or settings.smtp_user or "opencall@localhost"
+    msg["From"] = settings.smtp_from or settings.smtp_user or "callharness@localhost"
     msg["To"] = ", ".join(recipients)
     msg.set_content(body)
     with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=15) as smtp:
@@ -58,19 +58,19 @@ async def _deliver(rule: AlertRule, message: str) -> tuple[bool, str | None]:
             if not settings.smtp_host:
                 return False, (
                     "Email channel needs SMTP configured on the server "
-                    "(OPENCALL_SMTP_HOST, OPENCALL_SMTP_USER, OPENCALL_SMTP_PASSWORD, "
-                    "OPENCALL_SMTP_FROM)"
+                    "(CALLHARNESS_SMTP_HOST, CALLHARNESS_SMTP_USER, CALLHARNESS_SMTP_PASSWORD, "
+                    "CALLHARNESS_SMTP_FROM)"
                 )
             recipients = [a.strip() for a in rule.target_url.split(",") if a.strip()]
             if not recipients:
                 return False, "No recipient email addresses configured"
             await asyncio.to_thread(
-                _send_email_sync, recipients, f"OpenCall alert: {rule.name}", message
+                _send_email_sync, recipients, f"CallHarness alert: {rule.name}", message
             )
             return True, None
 
         payload = (
-            {"text": f":rotating_light: OpenCall alert — {message}"}
+            {"text": f":rotating_light: CallHarness alert — {message}"}
             if rule.channel == "slack"
             else {"rule": rule.name, "trigger": rule.trigger, "message": message}
         )

@@ -119,8 +119,8 @@ export type DisputedCall = {
   overcount: boolean;
   agent_esito: string | null;
   agent_motivazione: string | null;
-  opencall_outcome: string;
-  opencall_reason: string | null;
+  callharness_outcome: string;
+  callharness_reason: string | null;
   summary: string | null;
   success_rationale: string | null;
   failed_tool_calls: string[];
@@ -133,7 +133,7 @@ export type Disputes = {
   disputed_reason: number;
   overcounted: number;
   agreement_rate: number | null;
-  matrix: { agent: string; opencall: string; count: number }[];
+  matrix: { agent: string; callharness: string; count: number }[];
   items: DisputedCall[];
 };
 

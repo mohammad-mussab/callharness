@@ -13,7 +13,7 @@ from ..models import Call, EvaluationResult, Evaluator
 from .engine import build_transcript
 from .llm import chat_json
 
-logger = logging.getLogger("opencall.evaluators")
+logger = logging.getLogger("callharness.evaluators")
 
 EVAL_SYSTEM_PROMPT = """You are a strict QA judge for AI voice agent calls. You are given \
 one evaluation criterion and a call transcript. Decide whether the call meets the criterion. \

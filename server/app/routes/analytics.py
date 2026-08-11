@@ -55,7 +55,7 @@ async def disputes(
     date_to: datetime | None = Query(default=None, alias="to"),
     limit: int = Query(default=50, le=200),
 ):
-    """Where the agent's own verdict and OpenCall's analysis disagree.
+    """Where the agent's own verdict and CallHarness's analysis disagree.
 
     Only calls carrying an `agent_esito` in metadata AND a finished analysis are
     comparable; everything else is excluded rather than counted as agreement, so the
@@ -70,13 +70,13 @@ async def disputes(
     counts = {AGREED: 0, OUTCOME_DISPUTE: 0, REASON_DISPUTE: 0}
     overcounted = 0
     matrix: dict[tuple[str, str], int] = defaultdict(int)
-    disputed: list[tuple[Call, str, str]] = []  # (call, kind, opencall_outcome)
+    disputed: list[tuple[Call, str, str]] = []  # (call, kind, callharness_outcome)
 
     for call in rows:
         oc_outcome = compute_outcome(call.success, call.transferred, call.end_reason)
         oc_reason = call.transfer_reason or call.non_completion_reason
         verdict = classify(
-            meta=call.meta, opencall_outcome=oc_outcome, opencall_reason=oc_reason
+            meta=call.meta, callharness_outcome=oc_outcome, callharness_reason=oc_reason
         )
         if verdict is None:
             continue  # agent sent no verdict — nothing to compare
@@ -121,8 +121,8 @@ async def disputes(
             overcount=is_overcount(call.meta, oc_outcome),
             agent_esito=(call.meta or {}).get("agent_esito"),
             agent_motivazione=(call.meta or {}).get("agent_motivazione"),
-            opencall_outcome=oc_outcome,
-            opencall_reason=call.transfer_reason or call.non_completion_reason,
+            callharness_outcome=oc_outcome,
+            callharness_reason=call.transfer_reason or call.non_completion_reason,
             summary=call.summary,
             success_rationale=call.success_rationale,
             failed_tool_calls=failures.get(call.id, []),
@@ -138,7 +138,7 @@ async def disputes(
         overcounted=overcounted,
         agreement_rate=(counts[AGREED] / comparable if comparable else None),
         matrix=sorted(
-            ({"agent": a, "opencall": o, "count": c} for (a, o), c in matrix.items()),
+            ({"agent": a, "callharness": o, "count": c} for (a, o), c in matrix.items()),
             key=lambda x: -x["count"],
         ),
         items=items,

@@ -1,12 +1,21 @@
 # callharness-sdk
 
-Python SDK for [CallHarness](https://github.com/callharness) — open-source call analytics for voice AI agents.
+Python SDK for [CallHarness](https://github.com/mohammad-mussab/callharness) — open-source call analytics for voice AI agents.
+
+Send your agent's calls to a CallHarness server, which runs post-call LLM analysis
+(summary, sentiment, outcome, why a call transferred or didn't complete) and shows it
+on a dashboard. Self-hosted, so your transcripts stay on your own infrastructure.
 
 ## Install
 
 ```bash
-pip install callharness-sdk
+pip install callharness-sdk            # REST client + turn assembly
+pip install "callharness-sdk[pipecat]" # also installs pipecat-ai for the observers
 ```
+
+The `[pipecat]` extra only adds `pipecat-ai`. Skip it if you're on LiveKit, a custom
+stack, or calling the REST API directly — `callharness_sdk.pipecat` still imports
+cleanly without it, and only raises if you actually instantiate an observer.
 
 ## Direct ingestion
 
@@ -89,4 +98,51 @@ only depends on state (fatal error, transferred) that's already known live durin
 call, so it's correct regardless of teardown ordering. `observer.last_error` holds the
 most recent error message, useful to drop into `metadata` for debugging.
 
-See [examples/pipecat_bot.py](../examples/pipecat_bot.py) for a full working bot.
+## If your agent already has its own call pipeline
+
+Mature agents usually already collect a transcript, their own record of tool calls,
+and write to their own database. Adopting `CallRecorder` would mean maintaining two
+sources of truth — so instead, hand CallHarness what you already have:
+
+```python
+from callharness_sdk import CallHarnessClient, LatencyCollector, assemble_turns
+from callharness_sdk.pipecat import CallHarnessMetricsObserver
+
+latency = LatencyCollector()          # satisfies what the observer expects
+task = PipelineTask(
+    pipeline,
+    params=PipelineParams(enable_metrics=True),   # required, or no metrics are emitted
+    observers=[CallHarnessMetricsObserver(latency)],
+)
+
+# ...at the end of the call, from your own save routine:
+turns = assemble_turns(
+    transcript=my_transcript,        # [{role, content, timestamp}, ...]
+    tool_calls=my_function_calls,    # [{function_name, parameters, result, timestamp}]
+    latency=latency,
+    started_at=call_started_at,
+)
+CallHarnessClient("http://localhost:8010").ingest_call(
+    agent_id="my-agent", turns=turns, external_id=my_call_id,
+    transferred=..., metadata={"my_own_verdict": ...},
+)
+```
+
+`assemble_turns()` does the fiddly part: a tool call and a latency sample both happen
+*while* a reply is being produced, before its text exists, so both are matched by
+timestamp to the assistant turn they actually belong to. It accepts either field
+naming (`name`/`function_name`, `arguments`/`parameters`, `content`/`text`), truncates
+oversized tool results, and never records a tool as successful unless it can prove it.
+
+Anything you send in `metadata` is stored alongside the call — useful if your agent
+already classifies its own calls and you want to compare that against CallHarness's
+independent verdict.
+
+## Full example
+
+See [examples/pipecat_bot.py](https://github.com/mohammad-mussab/callharness/blob/main/examples/pipecat_bot.py)
+for a complete working bot.
+
+## Licence
+
+MIT

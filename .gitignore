@@ -31,3 +31,5 @@ sdk/making-callharness.txt
 
 tmp/
 Claude.md
+# Build artifacts
+sdk/dist/

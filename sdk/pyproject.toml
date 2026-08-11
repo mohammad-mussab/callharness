@@ -5,14 +5,51 @@ build-backend = "hatchling.build"
 [project]
 name = "callharness-sdk"
 version = "0.1.0"
-description = "Python SDK for CallHarness - open-source call analytics for voice AI agents"
+description = "Python SDK for CallHarness — open-source call analytics for voice AI agents"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
+authors = [{ name = "Mohammad Mussab" }]
+keywords = [
+    "voice-ai",
+    "call-analytics",
+    "observability",
+    "pipecat",
+    "livekit",
+    "evaluation",
+    "llm",
+]
 dependencies = ["httpx>=0.25"]
 
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+
+# Optional extras. `pip install callharness-sdk` is enough for the REST client and
+# turn assembly; the pipecat extra only adds what the Pipecat observers need, so
+# users on other stacks don't download it.
 [project.optional-dependencies]
 pipecat = ["pipecat-ai>=0.0.60"]
 
+[project.urls]
+Homepage = "https://github.com/mohammad-mussab/callharness"
+Repository = "https://github.com/mohammad-mussab/callharness"
+Issues = "https://github.com/mohammad-mussab/callharness/issues"
+
 [tool.hatch.build.targets.wheel]
 packages = ["callharness_sdk"]
+
+[tool.hatch.build.targets.sdist]
+include = ["callharness_sdk", "README.md", "LICENSE"]

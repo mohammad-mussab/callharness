@@ -110,6 +110,33 @@ export type AgentStats = {
   transfer_rate: number | null;
 };
 
+export type DisputedCall = {
+  id: string;
+  started_at: string;
+  agent_id: string;
+  duration_seconds: number | null;
+  kind: "outcome" | "reason";
+  overcount: boolean;
+  agent_esito: string | null;
+  agent_motivazione: string | null;
+  opencall_outcome: string;
+  opencall_reason: string | null;
+  summary: string | null;
+  success_rationale: string | null;
+  failed_tool_calls: string[];
+};
+
+export type Disputes = {
+  comparable: number;
+  agreed: number;
+  disputed_outcome: number;
+  disputed_reason: number;
+  overcounted: number;
+  agreement_rate: number | null;
+  matrix: { agent: string; opencall: string; count: number }[];
+  items: DisputedCall[];
+};
+
 export type TimeseriesPoint = {
   date: string;
   calls: number;

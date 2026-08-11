@@ -8,9 +8,17 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
+from ..disputes import (
+    AGREED,
+    OUTCOME_DISPUTE,
+    REASON_DISPUTE,
+    agent_outcome,
+    classify,
+    is_overcount,
+)
 from ..models import Call, Turn, utcnow
 from ..outcome import compute_outcome
-from ..schemas import LatencyOut, OverviewOut, TimeseriesPoint
+from ..schemas import DisputedCallOut, DisputesOut, LatencyOut, OverviewOut, TimeseriesPoint
 
 
 def percentile(values: list[float], p: float) -> float | None:
@@ -36,6 +44,105 @@ def _range_filter(query, date_from: datetime | None, date_to: datetime | None):
     if date_to:
         query = query.where(Call.started_at <= date_to.replace(tzinfo=None))
     return query
+
+
+@router.get("/disputes", response_model=DisputesOut)
+async def disputes(
+    session: AsyncSession = Depends(get_session),
+    agent_id: str | None = None,
+    kind: str | None = Query(default=None, pattern="^(outcome|reason)$"),
+    date_from: datetime | None = Query(default=None, alias="from"),
+    date_to: datetime | None = Query(default=None, alias="to"),
+    limit: int = Query(default=50, le=200),
+):
+    """Where the agent's own verdict and OpenCall's analysis disagree.
+
+    Only calls carrying an `agent_esito` in metadata AND a finished analysis are
+    comparable; everything else is excluded rather than counted as agreement, so the
+    agreement rate never flatters itself with calls nobody judged.
+    """
+    query = select(Call).where(Call.analysis_status == "completed")
+    if agent_id:
+        query = query.where(Call.agent_id == agent_id)
+    query = _range_filter(query, date_from, date_to)
+    rows = (await session.execute(query.order_by(Call.started_at.desc()))).scalars().all()
+
+    counts = {AGREED: 0, OUTCOME_DISPUTE: 0, REASON_DISPUTE: 0}
+    overcounted = 0
+    matrix: dict[tuple[str, str], int] = defaultdict(int)
+    disputed: list[tuple[Call, str, str]] = []  # (call, kind, opencall_outcome)
+
+    for call in rows:
+        oc_outcome = compute_outcome(call.success, call.transferred, call.end_reason)
+        oc_reason = call.transfer_reason or call.non_completion_reason
+        verdict = classify(
+            meta=call.meta, opencall_outcome=oc_outcome, opencall_reason=oc_reason
+        )
+        if verdict is None:
+            continue  # agent sent no verdict — nothing to compare
+
+        counts[verdict] += 1
+        matrix[(agent_outcome(call.meta) or "unknown", oc_outcome)] += 1
+        if verdict == AGREED:
+            continue
+        if is_overcount(call.meta, oc_outcome):
+            overcounted += 1
+        if kind is None or verdict == kind:
+            disputed.append((call, verdict, oc_outcome))
+
+    comparable = sum(counts.values())
+
+    # Load turns only for the page being returned — the failed-tool-call evidence is
+    # the most useful column here, but fetching turns for every call in the window
+    # would make this endpoint scale with total volume instead of with disputes.
+    page = disputed[:limit]
+    failures: dict[str, list[str]] = {}
+    if page:
+        turn_rows = (
+            await session.execute(
+                select(Turn.call_id, Turn.tool_calls).where(
+                    Turn.call_id.in_([c.id for c, _, _ in page]),
+                    Turn.tool_calls.is_not(None),
+                )
+            )
+        ).all()
+        for call_id, tool_calls in turn_rows:
+            for tc in tool_calls or []:
+                if isinstance(tc, dict) and tc.get("success") is False:
+                    failures.setdefault(call_id, []).append(tc.get("name") or "unknown")
+
+    items = [
+        DisputedCallOut(
+            id=call.id,
+            started_at=call.started_at,
+            agent_id=call.agent_id,
+            duration_seconds=call.duration_seconds,
+            kind=verdict,
+            overcount=is_overcount(call.meta, oc_outcome),
+            agent_esito=(call.meta or {}).get("agent_esito"),
+            agent_motivazione=(call.meta or {}).get("agent_motivazione"),
+            opencall_outcome=oc_outcome,
+            opencall_reason=call.transfer_reason or call.non_completion_reason,
+            summary=call.summary,
+            success_rationale=call.success_rationale,
+            failed_tool_calls=failures.get(call.id, []),
+        )
+        for call, verdict, oc_outcome in page
+    ]
+
+    return DisputesOut(
+        comparable=comparable,
+        agreed=counts[AGREED],
+        disputed_outcome=counts[OUTCOME_DISPUTE],
+        disputed_reason=counts[REASON_DISPUTE],
+        overcounted=overcounted,
+        agreement_rate=(counts[AGREED] / comparable if comparable else None),
+        matrix=sorted(
+            ({"agent": a, "opencall": o, "count": c} for (a, o), c in matrix.items()),
+            key=lambda x: -x["count"],
+        ),
+        items=items,
+    )
 
 
 @router.get("/overview", response_model=OverviewOut)

@@ -204,6 +204,38 @@ class OverviewOut(BaseModel):
     agent_stats: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class DisputedCallOut(BaseModel):
+    """One call where the agent's verdict and OpenCall's disagree."""
+
+    id: str
+    started_at: datetime
+    agent_id: str
+    duration_seconds: float | None
+    kind: str  # "outcome" | "reason"
+    overcount: bool  # agent said completed, OpenCall didn't — the costly direction
+    agent_esito: str | None
+    agent_motivazione: str | None
+    opencall_outcome: str
+    opencall_reason: str | None
+    summary: str | None
+    success_rationale: str | None
+    # Evidence the agent's judge never saw. A dispute backed by a failed tool call is
+    # far more likely to be OpenCall being right than the agent.
+    failed_tool_calls: list[str] = Field(default_factory=list)
+
+
+class DisputesOut(BaseModel):
+    comparable: int  # calls carrying an agent verdict AND a finished OpenCall analysis
+    agreed: int
+    disputed_outcome: int
+    disputed_reason: int
+    overcounted: int
+    agreement_rate: float | None
+    # Confusion matrix between the two judges: {agent, opencall, count}
+    matrix: list[dict[str, Any]] = Field(default_factory=list)
+    items: list[DisputedCallOut] = Field(default_factory=list)
+
+
 class TimeseriesPoint(BaseModel):
     date: str
     calls: int

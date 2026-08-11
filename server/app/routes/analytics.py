@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from ..db import get_session
 from ..disputes import (
@@ -16,9 +17,19 @@ from ..disputes import (
     classify,
     is_overcount,
 )
+from ..knowledge_gaps import extract_gaps
 from ..models import Call, Turn, utcnow
 from ..outcome import compute_outcome
-from ..schemas import DisputedCallOut, DisputesOut, LatencyOut, OverviewOut, TimeseriesPoint
+from ..schemas import (
+    DisputedCallOut,
+    DisputesOut,
+    GapExampleOut,
+    KnowledgeGapOut,
+    KnowledgeGapsOut,
+    LatencyOut,
+    OverviewOut,
+    TimeseriesPoint,
+)
 
 
 def percentile(values: list[float], p: float) -> float | None:
@@ -44,6 +55,106 @@ def _range_filter(query, date_from: datetime | None, date_to: datetime | None):
     if date_to:
         query = query.where(Call.started_at <= date_to.replace(tzinfo=None))
     return query
+
+
+@router.get("/knowledge-gaps", response_model=KnowledgeGapsOut)
+async def knowledge_gaps(
+    session: AsyncSession = Depends(get_session),
+    agent_id: str | None = None,
+    days: int = Query(default=7, ge=1, le=365),
+    min_count: int = Query(default=1, ge=1),
+    limit: int = Query(default=50, le=200),
+    examples_per_group: int = Query(default=3, ge=1, le=20),
+):
+    """Questions the agent couldn't answer because the record is missing.
+
+    These are transfers the customer can eliminate by adding data, not by changing the
+    agent — so the output is grouped by question and carries call ids they can verify
+    against their own dashboard before acting.
+    """
+    since = utcnow() - timedelta(days=days)
+    query = (
+        select(Call)
+        .options(selectinload(Call.turns))
+        .where(Call.started_at >= since)
+        .order_by(Call.started_at.desc())
+    )
+    if agent_id:
+        query = query.where(Call.agent_id == agent_id)
+    calls = (await session.execute(query)).scalars().all()
+
+    # normalized question -> aggregate
+    groups: dict[str, dict[str, Any]] = {}
+    calls_with_gaps = 0
+    total_gaps = 0
+
+    for call in calls:
+        gaps = extract_gaps(call)
+        if not gaps:
+            continue
+        calls_with_gaps += 1
+        outcome = compute_outcome(call.success, call.transferred, call.end_reason)
+
+        # One call asking the same thing twice is one gap for that call, so the count
+        # reflects how many callers wanted it, not how chatty the agent was.
+        seen_here: set[str] = set()
+        for gap in gaps:
+            key = f"{gap['tool']}::{gap['normalized']}"
+            total_gaps += 1
+            group = groups.setdefault(
+                key,
+                {
+                    "question": gap["question"],
+                    "tool": gap["tool"],
+                    "count": 0,
+                    "transferred": 0,
+                    "variants": set(),
+                    "examples": [],
+                },
+            )
+            group["variants"].add(gap["question"])
+            if key in seen_here:
+                continue
+            seen_here.add(key)
+            group["count"] += 1
+            if call.transferred:
+                group["transferred"] += 1
+            if len(group["examples"]) < examples_per_group:
+                group["examples"].append(
+                    GapExampleOut(
+                        call_id=call.id,
+                        external_id=call.external_id,
+                        started_at=call.started_at,
+                        agent_id=call.agent_id,
+                        question=gap["question"],
+                        outcome=outcome,
+                    )
+                )
+
+    ranked = sorted(
+        (g for g in groups.values() if g["count"] >= min_count),
+        key=lambda g: (-g["count"], -g["transferred"]),
+    )[:limit]
+
+    return KnowledgeGapsOut(
+        window_days=days,
+        calls_scanned=len(calls),
+        calls_with_gaps=calls_with_gaps,
+        total_gaps=total_gaps,
+        gap_call_rate=(calls_with_gaps / len(calls) if calls else None),
+        groups=[
+            KnowledgeGapOut(
+                question=g["question"],
+                tool=g["tool"],
+                count=g["count"],
+                transferred=g["transferred"],
+                # Shortest phrasing first — it reads best in the customer's email.
+                variants=sorted(g["variants"], key=len)[:5],
+                examples=g["examples"],
+            )
+            for g in ranked
+        ],
+    )
 
 
 @router.get("/disputes", response_model=DisputesOut)

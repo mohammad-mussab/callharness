@@ -137,6 +137,33 @@ export type Disputes = {
   items: DisputedCall[];
 };
 
+export type GapExample = {
+  call_id: string;
+  external_id: string | null;
+  started_at: string;
+  agent_id: string;
+  question: string;
+  outcome: string;
+};
+
+export type KnowledgeGap = {
+  question: string;
+  tool: string;
+  count: number;
+  transferred: number;
+  variants: string[];
+  examples: GapExample[];
+};
+
+export type KnowledgeGaps = {
+  window_days: number;
+  calls_scanned: number;
+  calls_with_gaps: number;
+  total_gaps: number;
+  gap_call_rate: number | null;
+  groups: KnowledgeGap[];
+};
+
 export type TimeseriesPoint = {
   date: string;
   calls: number;

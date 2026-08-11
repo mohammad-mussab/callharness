@@ -236,6 +236,39 @@ class DisputesOut(BaseModel):
     items: list[DisputedCallOut] = Field(default_factory=list)
 
 
+class GapExampleOut(BaseModel):
+    """One call that hit this gap — the customer looks the id up in their own system."""
+
+    call_id: str
+    external_id: str | None
+    started_at: datetime
+    agent_id: str
+    question: str
+    outcome: str
+
+
+class KnowledgeGapOut(BaseModel):
+    """A question the agent couldn't answer because the data wasn't there."""
+
+    question: str  # the clearest phrasing seen
+    tool: str  # which lookup came back empty
+    count: int  # how many times it was asked
+    transferred: int  # how many of those ended up with a human
+    variants: list[str] = Field(default_factory=list)
+    examples: list[GapExampleOut] = Field(default_factory=list)
+
+
+class KnowledgeGapsOut(BaseModel):
+    window_days: int
+    calls_scanned: int
+    calls_with_gaps: int
+    total_gaps: int
+    # Share of scanned calls that hit at least one missing record. This is the headline:
+    # it says how much of the transfer rate is a content problem, not an agent problem.
+    gap_call_rate: float | None
+    groups: list[KnowledgeGapOut] = Field(default_factory=list)
+
+
 class TimeseriesPoint(BaseModel):
     date: str
     calls: int

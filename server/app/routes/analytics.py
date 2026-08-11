@@ -17,7 +17,7 @@ from ..disputes import (
     classify,
     is_overcount,
 )
-from ..knowledge_gaps import extract_gaps
+from ..knowledge_gaps import cluster_questions, extract_gaps
 from ..models import Call, Turn, utcnow
 from ..outcome import compute_outcome
 from ..schemas import (
@@ -83,8 +83,11 @@ async def knowledge_gaps(
         query = query.where(Call.agent_id == agent_id)
     calls = (await session.execute(query)).scalars().all()
 
-    # normalized question -> aggregate
-    groups: dict[str, dict[str, Any]] = {}
+    # Flatten to occurrences first, then cluster by meaning. Grouping on an exact
+    # normalized string splits the same missing record across every phrasing a caller
+    # happened to use, which is the difference between one actionable line and eleven
+    # near-duplicates nobody reads.
+    occurrences: list[dict[str, Any]] = []
     calls_with_gaps = 0
     total_gaps = 0
 
@@ -94,45 +97,53 @@ async def knowledge_gaps(
             continue
         calls_with_gaps += 1
         outcome = compute_outcome(call.success, call.transferred, call.end_reason)
-
-        # One call asking the same thing twice is one gap for that call, so the count
-        # reflects how many callers wanted it, not how chatty the agent was.
+        # One call asking the same thing twice counts once, so the number reflects how
+        # many callers wanted it rather than how chatty the agent was.
         seen_here: set[str] = set()
         for gap in gaps:
-            key = f"{gap['tool']}::{gap['normalized']}"
             total_gaps += 1
-            group = groups.setdefault(
-                key,
-                {
-                    "question": gap["question"],
-                    "tool": gap["tool"],
-                    "count": 0,
-                    "transferred": 0,
-                    "variants": set(),
-                    "examples": [],
-                },
-            )
-            group["variants"].add(gap["question"])
+            key = f"{gap['tool']}::{gap['normalized']}"
             if key in seen_here:
                 continue
             seen_here.add(key)
-            group["count"] += 1
-            if call.transferred:
-                group["transferred"] += 1
-            if len(group["examples"]) < examples_per_group:
-                group["examples"].append(
-                    GapExampleOut(
-                        call_id=call.id,
-                        external_id=call.external_id,
-                        started_at=call.started_at,
-                        agent_id=call.agent_id,
-                        question=gap["question"],
-                        outcome=outcome,
-                    )
-                )
+            occurrences.append({**gap, "call": call, "outcome": outcome})
+
+    # Cluster within a tool: the same words asked of different lookups are different
+    # missing records.
+    by_tool: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for occurrence in occurrences:
+        by_tool[occurrence["tool"]].append(occurrence)
+
+    groups: list[dict[str, Any]] = []
+    for tool, items in by_tool.items():
+        for cluster in cluster_questions(items):
+            variants = sorted({i["question"] for i in cluster}, key=len)
+            transferred = sum(1 for i in cluster if i["call"].transferred)
+            groups.append(
+                {
+                    # Shortest phrasing reads best in the customer's email — it is the
+                    # question with the filler stripped by the callers themselves.
+                    "question": variants[0],
+                    "tool": tool,
+                    "count": len(cluster),
+                    "transferred": transferred,
+                    "variants": variants[:5],
+                    "examples": [
+                        GapExampleOut(
+                            call_id=i["call"].id,
+                            external_id=i["call"].external_id,
+                            started_at=i["call"].started_at,
+                            agent_id=i["call"].agent_id,
+                            question=i["question"],
+                            outcome=i["outcome"],
+                        )
+                        for i in cluster[:examples_per_group]
+                    ],
+                }
+            )
 
     ranked = sorted(
-        (g for g in groups.values() if g["count"] >= min_count),
+        (g for g in groups if g["count"] >= min_count),
         key=lambda g: (-g["count"], -g["transferred"]),
     )[:limit]
 
@@ -142,18 +153,7 @@ async def knowledge_gaps(
         calls_with_gaps=calls_with_gaps,
         total_gaps=total_gaps,
         gap_call_rate=(calls_with_gaps / len(calls) if calls else None),
-        groups=[
-            KnowledgeGapOut(
-                question=g["question"],
-                tool=g["tool"],
-                count=g["count"],
-                transferred=g["transferred"],
-                # Shortest phrasing first — it reads best in the customer's email.
-                variants=sorted(g["variants"], key=len)[:5],
-                examples=g["examples"],
-            )
-            for g in ranked
-        ],
+        groups=[KnowledgeGapOut(**g) for g in ranked],
     )
 
 

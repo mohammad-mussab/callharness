@@ -13,6 +13,7 @@ from sqlalchemy.orm import selectinload
 from ..config import settings
 from ..db import SessionLocal
 from ..models import AnalysisConfig, Call, utcnow
+from ..taxonomy import DEFAULT_NON_COMPLETION_REASONS, DEFAULT_TRANSFER_REASONS
 from .alerts import check_call_alerts, check_window_alerts
 from .engine import analyze_call
 from .evaluators import run_evaluators
@@ -24,9 +25,20 @@ WINDOW_ALERT_INTERVAL_SECONDS = 60.0
 
 async def get_or_create_config(session) -> AnalysisConfig:
     config = await session.get(AnalysisConfig, 1)
+    changed = config is None
     if config is None:
         config = AnalysisConfig(id=1)
         session.add(config)
+    # Materialize the default taxonomies onto the row so the Settings page has
+    # something concrete to edit rather than an empty list. Also backfills installs
+    # that predate these columns. Idempotent: only runs while the lists are empty.
+    if not config.transfer_reasons:
+        config.transfer_reasons = [dict(c) for c in DEFAULT_TRANSFER_REASONS]
+        changed = True
+    if not config.non_completion_reasons:
+        config.non_completion_reasons = [dict(c) for c in DEFAULT_NON_COMPLETION_REASONS]
+        changed = True
+    if changed:
         await session.commit()
     return config
 

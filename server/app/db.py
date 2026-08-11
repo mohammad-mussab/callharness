@@ -22,7 +22,15 @@ COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
     ("turns", "llm_ttft_ms", "FLOAT"),
     ("turns", "tts_ttfb_ms", "FLOAT"),
     ("turns", "translated_text", "TEXT"),
+    ("turns", "tool_calls", "JSON"),
+    ("calls", "transfer_reason", "VARCHAR(32)"),
+    ("calls", "non_completion_reason", "VARCHAR(32)"),
+    ("calls", "reason_source", "VARCHAR(16)"),
     ("analysis_config", "output_language", "VARCHAR(32) DEFAULT 'english'"),
+    # DEFAULT TRUE (not 1) so the same DDL is valid on both SQLite and Postgres.
+    ("analysis_config", "classification_enabled", "BOOLEAN DEFAULT TRUE"),
+    ("analysis_config", "transfer_reasons", "JSON"),
+    ("analysis_config", "non_completion_reasons", "JSON"),
 ]
 
 

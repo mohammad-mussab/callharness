@@ -35,12 +35,22 @@ class CallRecorder:
         self.turns: list[dict[str, Any]] = []
         self._flushed = False
         self._pending_components: dict[str, float] = {}
+        self._pending_tool_calls: list[dict[str, Any]] = []
 
     def record_component_latency(self, component: str, ms: float) -> None:
         """Record STT/LLM/TTS latency for the *next* assistant turn.
         component: "stt" | "llm" | "tts"."""
         if component in ("stt", "llm", "tts") and ms >= 0:
             self._pending_components[component] = round(ms, 1)
+
+    def record_tool_call(
+        self, name: str, arguments: Any = None, result: Any = None, success: bool | None = None
+    ) -> None:
+        """Record a tool/function call, attached to the *next* assistant turn
+        (tool calls happen mid-processing, before the assistant's spoken reply)."""
+        self._pending_tool_calls.append(
+            {"name": name, "arguments": arguments, "result": result, "success": success}
+        )
 
     def add_turn(
         self,
@@ -52,12 +62,15 @@ class CallRecorder:
         llm_ttft_ms: float | None = None,
         tts_ttfb_ms: float | None = None,
         interrupted: bool = False,
+        tool_calls: list[dict[str, Any]] | None = None,
     ) -> None:
         if role not in ("user", "assistant") or not text.strip():
             return
         # Merge consecutive fragments from the same speaker into one turn
         if self.turns and self.turns[-1]["role"] == role:
             self.turns[-1]["text"] += " " + text.strip()
+            if tool_calls:
+                self.turns[-1].setdefault("tool_calls", []).extend(tool_calls)
             return
         if start_time is None:
             start_time = (datetime.now(timezone.utc) - self.started_at).total_seconds()
@@ -70,6 +83,9 @@ class CallRecorder:
                 tts_ttfb_ms if tts_ttfb_ms is not None else self._pending_components.get("tts")
             )
             self._pending_components = {}
+        if role == "assistant" and self._pending_tool_calls:
+            tool_calls = (tool_calls or []) + self._pending_tool_calls
+            self._pending_tool_calls = []
         if latency_ms is None:
             # Approximate voice-to-voice latency as the sum of component latencies
             components = [v for v in (stt_ms, llm_ttft_ms, tts_ttfb_ms) if v is not None]
@@ -84,6 +100,7 @@ class CallRecorder:
                 "llm_ttft_ms": llm_ttft_ms,
                 "tts_ttfb_ms": tts_ttfb_ms,
                 "interrupted": interrupted,
+                "tool_calls": tool_calls or None,
             }
         )
 
@@ -94,8 +111,17 @@ class CallRecorder:
         recording_path: str | None = None,
         recording_bytes: bytes | None = None,
         recording_filename: str = "recording.wav",
+        transfer_reason: str | None = None,
+        non_completion_reason: str | None = None,
     ) -> dict[str, Any] | None:
-        """Upload the call. Safe to call multiple times; only uploads once."""
+        """Upload the call. Safe to call multiple times; only uploads once.
+
+        `transfer_reason` / `non_completion_reason` are optional and only for agents
+        that already classify their own calls. Leave them unset and OpenCall infers
+        the reason during analysis, using the taxonomy configured in the dashboard.
+        When set, the value is authoritative and analysis will not overwrite it — so
+        it should match one of the configured category keys.
+        """
         if self._flushed:
             return None
         self._flushed = True
@@ -116,6 +142,8 @@ class CallRecorder:
                 end_reason=end_reason,
                 transferred=transferred,
                 metadata=self.metadata or None,
+                transfer_reason=transfer_reason,
+                non_completion_reason=non_completion_reason,
             )
             if recording_path:
                 await self.client.upload_recording(call["id"], recording_path)

@@ -8,12 +8,64 @@ import json
 from typing import Any
 
 from ..models import AnalysisConfig, Call
+from ..taxonomy import (
+    DEFAULT_NON_COMPLETION_REASONS,
+    DEFAULT_TRANSFER_REASONS,
+    FALLBACK_KEY,
+    categories_or_default,
+    normalize_key,
+)
 from .llm import chat_json
 
 SYSTEM_PROMPT = """You are a call quality analyst for AI voice agents. You are given the \
-transcript of a phone call between a user and an AI assistant. Analyze it and respond with \
+transcript of a phone call between a user and an AI assistant. Lines starting with \
+"[tool call: ...]" are ground-truth system events (function calls the assistant actually \
+made, with their real results) — not spoken dialogue. Treat them as fact, and use them \
+instead of guessing when they explain why something happened (e.g. a failed tool call \
+explains a dead end better than inferring one from tone). Analyze the call and respond with \
 a single JSON object exactly matching the requested structure. Be factual: only state \
 things supported by the transcript. Respond with JSON only."""
+
+
+def classification_enabled(config: AnalysisConfig) -> bool:
+    """Whether the LLM should classify transfer / non-completion reasons.
+
+    Reads as enabled when the column is NULL — rows migrated from before this
+    setting existed always classified, so "unset" must not silently turn it off.
+    """
+    return config.classification_enabled is not False
+
+
+def transfer_categories(config: AnalysisConfig) -> list[dict[str, str]]:
+    return categories_or_default(config.transfer_reasons, DEFAULT_TRANSFER_REASONS)
+
+
+def non_completion_categories(config: AnalysisConfig) -> list[dict[str, str]]:
+    return categories_or_default(
+        config.non_completion_reasons, DEFAULT_NON_COMPLETION_REASONS
+    )
+
+
+def _choice_list(categories: list[dict[str, str]]) -> str:
+    return "; ".join(f'"{c["key"]}" ({c["description"]})' for c in categories)
+
+
+def _resolve_key(value: Any, categories: list[dict[str, str]]) -> str:
+    """Map an LLM answer onto a configured key, falling back to the catch-all."""
+    key = normalize_key(value)
+    valid = {c["key"] for c in categories}
+    if key in valid:
+        return key
+    return FALLBACK_KEY if FALLBACK_KEY in valid else next(iter(valid))
+
+
+def _format_tool_call(tc: dict) -> str:
+    name = tc.get("name", "unknown_tool")
+    args = json.dumps(tc.get("arguments"), default=str)[:200]
+    result = json.dumps(tc.get("result"), default=str)[:200]
+    success = tc.get("success")
+    status = " [FAILED]" if success is False else ""
+    return f"  [tool call: {name}({args}) -> {result}{status}]"
 
 
 def build_transcript(call: Call) -> str:
@@ -21,6 +73,8 @@ def build_transcript(call: Call) -> str:
     for t in call.turns:
         speaker = "User" if t.role == "user" else "Assistant"
         lines.append(f"{speaker}: {t.text}")
+        for tc in t.tool_calls or []:
+            lines.append(_format_tool_call(tc))
     return "\n".join(lines)
 
 
@@ -63,6 +117,31 @@ def build_user_prompt(call: Call, config: AnalysisConfig) -> str:
                 '{"passed": boolean, "rationale": short string}'
             )
         schema["success"] = {"passed": "boolean", "rationale": "string"}
+
+    # Only ever ask about the one dimension that can apply. `transferred` is a
+    # deterministic flag set by the agent, so a transferred call can never have a
+    # non-completion reason and vice versa — asking for both wastes tokens and
+    # invites the LLM to fill in a field that will be discarded. An agent that
+    # classified the call itself (reason_source="agent") is authoritative, so we
+    # don't ask at all.
+    if classification_enabled(config) and call.reason_source != "agent":
+        if call.transferred:
+            sections.append(
+                '- "transfer_reason" (string): this call was transferred to a human. '
+                "Classify why, using exactly one of these labels: "
+                f"{_choice_list(transfer_categories(config))}. Prefer the tool call log "
+                'over guessing from tone — e.g. use "technical_error" if a tool call '
+                "failed shortly before the transfer."
+            )
+            schema["transfer_reason"] = "string"
+        else:
+            sections.append(
+                '- "non_completion_reason" (string or null): if the call ended WITHOUT '
+                "the caller's need being resolved, classify why using exactly one of "
+                f"these labels: {_choice_list(non_completion_categories(config))}. "
+                "If the caller's need WAS resolved, use null."
+            )
+            schema["non_completion_reason"] = "string|null"
 
     fields = config.extraction_fields or []
     if config.extraction_enabled and fields:
@@ -136,6 +215,29 @@ def apply_result(call: Call, config: AnalysisConfig, result: dict) -> None:
         call.success_score = _coerce_number(success.get("score"))
         rationale = success.get("rationale")
         call.success_rationale = str(rationale) if rationale else None
+
+    # The LLM classifies *why*, never *whether*: a reason is only persisted when the
+    # deterministic fields (`transferred`, and `success` from the block above) agree
+    # it applies. An agent that classified the call itself is left untouched, so
+    # re-analysis can't overwrite ground truth with a guess.
+    if call.reason_source != "agent" and classification_enabled(config):
+        transfer_reason = result.get("transfer_reason")
+        if call.transferred and transfer_reason:
+            call.transfer_reason = _resolve_key(transfer_reason, transfer_categories(config))
+        else:
+            call.transfer_reason = None
+
+        non_completion_reason = result.get("non_completion_reason")
+        if not call.transferred and call.success is not True and non_completion_reason:
+            call.non_completion_reason = _resolve_key(
+                non_completion_reason, non_completion_categories(config)
+            )
+        else:
+            call.non_completion_reason = None
+
+        call.reason_source = (
+            "llm" if (call.transfer_reason or call.non_completion_reason) else None
+        )
 
     if config.extraction_enabled and (config.extraction_fields or []):
         data = result.get("structured_data")

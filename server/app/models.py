@@ -56,6 +56,15 @@ class Call(Base):
     success_rationale: Mapped[str | None] = mapped_column(Text)
     structured_data: Mapped[dict | None] = mapped_column(JSON, default=None)
 
+    # Classification of *why* this call transferred / didn't complete, against the
+    # taxonomies on AnalysisConfig (seeded from taxonomy.py) — null unless applicable.
+    transfer_reason: Mapped[str | None] = mapped_column(String(32), index=True)
+    non_completion_reason: Mapped[str | None] = mapped_column(String(32), index=True)
+    # Where those two labels came from: "agent" (supplied at ingest by an agent that
+    # classifies itself) or "llm" (OpenCall's own analysis pass). Agent-supplied wins
+    # and is never overwritten by analysis — see analysis/engine.py apply_result().
+    reason_source: Mapped[str | None] = mapped_column(String(16))
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
@@ -83,6 +92,9 @@ class Turn(Base):
     llm_ttft_ms: Mapped[float | None] = mapped_column(Float)  # LLM time-to-first-token
     tts_ttfb_ms: Mapped[float | None] = mapped_column(Float)  # TTS time-to-first-byte
     interrupted: Mapped[bool] = mapped_column(Boolean, default=False)
+    # [{"name": str, "arguments": Any, "result": Any, "success": bool}, ...] — function/tool
+    # calls the agent made while producing this turn (populated by OpenCallFrameObserver)
+    tool_calls: Mapped[list | None] = mapped_column(JSON, default=None)
 
     call: Mapped[Call] = relationship(back_populates="turns")
 
@@ -162,4 +174,10 @@ class AnalysisConfig(Base):
     extraction_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     # list of {"name": str, "type": "text|boolean|number|enum", "description": str, "choices": [str]}
     extraction_fields: Mapped[list | None] = mapped_column(JSON, default=list)
+    # Classify why calls transfer / don't complete. Both taxonomies are lists of
+    # {"key": str, "description": str}, editable in Settings and seeded from
+    # taxonomy.py on first run; an empty list falls back to those defaults.
+    classification_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    transfer_reasons: Mapped[list | None] = mapped_column(JSON, default=list)
+    non_completion_reasons: Mapped[list | None] = mapped_column(JSON, default=list)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)

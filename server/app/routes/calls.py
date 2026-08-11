@@ -2,7 +2,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import exists, func, select
+from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -20,6 +20,7 @@ from ..schemas import (
     EvaluationResultOut,
 )
 from ..storage import content_type_for, save_recording
+from ..taxonomy import normalize_key
 
 router = APIRouter(prefix="/api/v1/calls", tags=["calls"])
 
@@ -50,6 +51,21 @@ async def ingest_call(payload: CallCreate, session: AsyncSession = Depends(get_s
     if duration is None and started_at and ended_at:
         duration = max(0.0, (ended_at - started_at).total_seconds())
 
+    # An agent that classifies its own calls sends the reason with the call; that is
+    # ground truth and analysis won't overwrite it (see engine.apply_result). Only
+    # the reason that matches the call's deterministic `transferred` flag is kept —
+    # a transferred call can't also have a non-completion reason.
+    transfer_reason = (
+        normalize_key(payload.transfer_reason)
+        if payload.transferred and payload.transfer_reason
+        else None
+    )
+    non_completion_reason = (
+        normalize_key(payload.non_completion_reason)
+        if not payload.transferred and payload.non_completion_reason
+        else None
+    )
+
     call = Call(
         external_id=payload.external_id,
         agent_id=payload.agent_id,
@@ -62,6 +78,9 @@ async def ingest_call(payload: CallCreate, session: AsyncSession = Depends(get_s
         transferred=payload.transferred,
         recording_url=payload.recording_url,
         meta=payload.metadata,
+        transfer_reason=transfer_reason,
+        non_completion_reason=non_completion_reason,
+        reason_source="agent" if (transfer_reason or non_completion_reason) else None,
         analysis_status="pending" if payload.turns else "skipped",
     )
     if started_at:
@@ -79,6 +98,7 @@ async def ingest_call(payload: CallCreate, session: AsyncSession = Depends(get_s
                 llm_ttft_ms=t.llm_ttft_ms,
                 tts_ttfb_ms=t.tts_ttfb_ms,
                 interrupted=t.interrupted,
+                tool_calls=[tc.model_dump() for tc in t.tool_calls] if t.tool_calls else None,
             )
         )
     quality = compute_quality(call.turns)
@@ -97,6 +117,9 @@ async def list_calls(
     success: bool | None = None,
     sentiment: str | None = None,
     end_reason: str | None = None,
+    transfer_reason: str | None = None,
+    non_completion_reason: str | None = None,
+    outcome: str | None = None,
     analysis_status: str | None = None,
     q: str | None = None,
     date_from: datetime | None = Query(default=None, alias="from"),
@@ -113,6 +136,34 @@ async def list_calls(
         query = query.where(Call.sentiment_label == sentiment)
     if end_reason:
         query = query.where(Call.end_reason == end_reason)
+    if transfer_reason:
+        query = query.where(Call.transfer_reason == transfer_reason)
+    if non_completion_reason:
+        query = query.where(Call.non_completion_reason == non_completion_reason)
+    if outcome:
+        # Mirrors outcome.compute_outcome()'s precedence — kept in sync by hand
+        # since it needs to run in SQL here, not Python.
+        if outcome == "transferred":
+            query = query.where(Call.transferred == True)  # noqa: E712
+        elif outcome == "completed":
+            query = query.where(
+                Call.transferred == False,  # noqa: E712
+                or_(
+                    Call.success == True,  # noqa: E712
+                    and_(Call.success.is_(None), Call.end_reason == "completed"),
+                ),
+            )
+        elif outcome == "non_completed":
+            query = query.where(
+                Call.transferred == False,  # noqa: E712
+                or_(
+                    Call.success == False,  # noqa: E712
+                    and_(
+                        Call.success.is_(None),
+                        or_(Call.end_reason.is_(None), Call.end_reason != "completed"),
+                    ),
+                ),
+            )
     if analysis_status:
         query = query.where(Call.analysis_status == analysis_status)
     if date_from:

@@ -121,6 +121,38 @@ export function SentimentDonut({ distribution }: { distribution: Record<string, 
   );
 }
 
+const OUTCOME_COLORS: Record<string, string> = {
+  completed: "#34d399",
+  transferred: "#a78bfa",
+  non_completed: "#f87171",
+};
+
+const OUTCOME_LABELS: Record<string, string> = {
+  completed: "Completed",
+  transferred: "Transferred",
+  non_completed: "Non-completed",
+};
+
+export function OutcomeDonut({ distribution }: { distribution: Record<string, number> }) {
+  const data = Object.entries(distribution)
+    .map(([name, value]) => ({ name: OUTCOME_LABELS[name] ?? name, key: name, value }))
+    .filter((d) => d.value > 0);
+  if (data.length === 0)
+    return <div className="flex h-[220px] items-center justify-center text-sm text-zinc-500">No outcome data</div>;
+  return (
+    <ResponsiveContainer width="100%" height={220}>
+      <PieChart>
+        <Pie data={data} dataKey="value" nameKey="name" innerRadius={55} outerRadius={85} paddingAngle={3} stroke="none">
+          {data.map((entry) => (
+            <Cell key={entry.key} fill={OUTCOME_COLORS[entry.key] ?? "#a1a1aa"} />
+          ))}
+        </Pie>
+        <Tooltip contentStyle={tooltipStyle} />
+      </PieChart>
+    </ResponsiveContainer>
+  );
+}
+
 export function ReasonBars({ data }: { data: { reason: string; count: number }[] }) {
   return (
     <ResponsiveContainer width="100%" height={220}>

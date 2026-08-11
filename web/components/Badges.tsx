@@ -17,16 +17,6 @@ export function SentimentBadge({ label }: { label: string | null }) {
   );
 }
 
-export function SuccessBadge({ success }: { success: boolean | null }) {
-  if (success === null)
-    return <span className="text-zinc-500 text-xs">—</span>;
-  return success ? (
-    <span className={`${badgeBase} bg-emerald-500/15 text-emerald-400`}>Success</span>
-  ) : (
-    <span className={`${badgeBase} bg-red-500/15 text-red-400`}>Failed</span>
-  );
-}
-
 export function StatusBadge({ status }: { status: string }) {
   const styles: Record<string, string> = {
     completed: "bg-indigo-500/15 text-indigo-300",
@@ -46,6 +36,70 @@ export function EndReasonBadge({ reason }: { reason: string | null }) {
   if (!reason) return <span className="text-zinc-500 text-xs">—</span>;
   return (
     <span className={`${badgeBase} bg-zinc-700/40 text-zinc-300`}>
+      {titleCase(reason)}
+    </span>
+  );
+}
+
+const OUTCOME_STYLES: Record<string, string> = {
+  completed: "bg-emerald-500/15 text-emerald-400",
+  transferred: "bg-violet-500/15 text-violet-300",
+  non_completed: "bg-red-500/15 text-red-400",
+};
+
+const OUTCOME_LABELS: Record<string, string> = {
+  completed: "Completed",
+  transferred: "Transferred",
+  non_completed: "Non-completed",
+};
+
+export function OutcomeBadge({ outcome }: { outcome: string | null }) {
+  if (!outcome) return <span className="text-zinc-500 text-xs">—</span>;
+  return (
+    <span className={`${badgeBase} ${OUTCOME_STYLES[outcome] ?? "bg-zinc-700/40 text-zinc-300"}`}>
+      {OUTCOME_LABELS[outcome] ?? titleCase(outcome)}
+    </span>
+  );
+}
+
+// Shown alongside OutcomeBadge (which already says "Transferred"/"Non-completed"),
+// so these only need to add the *reason*, not repeat the outcome itself.
+// `source` says who decided: the agent sent it with the call, or OpenCall's
+// analysis inferred it. Surfaced on hover rather than as a second badge — it
+// matters when a label looks wrong, not on every row.
+type ReasonSource = "agent" | "llm" | null;
+
+function sourceTitle(reason: string, source: ReasonSource) {
+  if (source === "agent") return `${reason} — classified by the agent at call end`;
+  if (source === "llm") return `${reason} — inferred by OpenCall's analysis`;
+  return reason;
+}
+
+export function TransferReasonBadge({
+  reason,
+  source = null,
+}: {
+  reason: string | null;
+  source?: ReasonSource;
+}) {
+  if (!reason) return null;
+  return (
+    <span className={`${badgeBase} bg-violet-500/15 text-violet-300`} title={sourceTitle(reason, source)}>
+      {titleCase(reason)}
+    </span>
+  );
+}
+
+export function NonCompletionReasonBadge({
+  reason,
+  source = null,
+}: {
+  reason: string | null;
+  source?: ReasonSource;
+}) {
+  if (!reason) return null;
+  return (
+    <span className={`${badgeBase} bg-amber-500/15 text-amber-300`} title={sourceTitle(reason, source)}>
       {titleCase(reason)}
     </span>
   );

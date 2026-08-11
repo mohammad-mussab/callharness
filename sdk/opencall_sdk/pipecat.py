@@ -85,6 +85,9 @@ try:  # Observers require pipecat to be installed
     from pipecat.frames.frames import (
         BotStartedSpeakingFrame,
         BotStoppedSpeakingFrame,
+        CancelFrame,
+        EndFrame,
+        ErrorFrame,
         FunctionCallResultFrame,
         MetricsFrame,
         TranscriptionFrame,
@@ -141,6 +144,13 @@ try:  # Observers require pipecat to be installed
         - STT / LLM / TTS TTFB component latency from MetricsFrames
         - interruptions (user starts speaking while the bot is speaking)
         - transfers (a tool from transfer_tool_names returned a result)
+        - every tool/function call the agent makes (name, arguments, result),
+          attached to the assistant turn it led to
+        - end_reason, derived from the pipeline's own shutdown signal instead of
+          a string the integrator has to guess: "error" if a fatal ErrorFrame was
+          seen, else the explicit `reason=` on an EndFrame/CancelFrame/EndTaskFrame/
+          CancelTaskFrame if the bot set one, else "transferred" if a transfer
+          fired, else "completed" (or "cancelled" for an unreasoned CancelFrame).
 
         Usage:
             recorder = create_recorder("http://localhost:8010", agent_id="my-agent")
@@ -148,8 +158,15 @@ try:  # Observers require pipecat to be installed
                 recorder, stt=stt, tts=tts, transfer_tool_names={"transfer_to_human"}
             )
             # add `observer` to your PipelineTask/PipelineWorker observers, then
-            # when the call ends:
-            await recorder.flush(end_reason="completed", transferred=observer.transferred)
+            # when the call ends, call finalize_end_reason() rather than reading
+            # .end_reason directly — most integrations (e.g. a transport's
+            # on_client_disconnected) learn the call ended *before* an
+            # EndFrame/CancelFrame has actually propagated through the pipeline,
+            # so .end_reason may still be None at that point:
+            await recorder.flush(
+                end_reason=observer.finalize_end_reason(),
+                transferred=observer.transferred,
+            )
 
         Pass your STT and TTS service instances so transcript frames are only
         captured at their origin (observers see every frame once per pipeline
@@ -175,6 +192,40 @@ try:  # Observers require pipecat to be installed
             self._bot_speaking = False
             # latency values waiting for the next assistant turn to be created
             self._pending: dict[str, float] = {}
+            # deterministic end-of-call reason (see class docstring)
+            self.end_reason: str | None = None
+            self.last_error: str | None = None
+            self._had_fatal_error = False
+
+        def _set_end_reason(self, explicit: str | None, is_cancel: bool) -> None:
+            if self._had_fatal_error:
+                self.end_reason = "error"
+            elif explicit:
+                self.end_reason = explicit
+            elif self.transferred:
+                self.end_reason = "transferred"
+            else:
+                self.end_reason = "cancelled" if is_cancel else "completed"
+
+        def finalize_end_reason(self, default: str = "completed") -> str:
+            """Best end_reason available *right now* — call this from your own
+            disconnect/teardown handler instead of reading `.end_reason` directly.
+
+            Many integrations (e.g. a transport's `on_client_disconnected`) learn
+            the call has ended before an EndFrame/CancelFrame has propagated
+            through the pipeline — `.end_reason` would still be None at that
+            point. This returns the same priority (fatal error > an
+            already-observed explicit reason > transferred > `default`) using
+            only state that's tracked live during the call, so it's correct
+            regardless of teardown ordering.
+            """
+            if self._had_fatal_error:
+                return "error"
+            if self.end_reason:
+                return self.end_reason
+            if self.transferred:
+                return "transferred"
+            return default
 
         def _is_origin(self, data: "FramePushed", service: Any) -> bool:
             if service is not None:
@@ -269,6 +320,33 @@ try:  # Observers require pipecat to be installed
             if isinstance(frame, FunctionCallResultFrame):
                 if frame.function_name in self._transfer_tools:
                     self.transferred = True
+                result = frame.result
+                success = None
+                if isinstance(result, dict) and "error" in result:
+                    success = False
+                elif isinstance(result, Exception):
+                    success = False
+                self._recorder.record_tool_call(
+                    name=frame.function_name,
+                    arguments=frame.arguments,
+                    result=str(result)[:500] if result is not None else None,
+                    success=success,
+                )
+                return
+
+            if isinstance(frame, ErrorFrame):
+                self.last_error = str(getattr(frame, "error", ""))[:500]
+                if getattr(frame, "fatal", False):
+                    self._had_fatal_error = True
+                return
+
+            if isinstance(frame, EndFrame):
+                self._set_end_reason(getattr(frame, "reason", None), is_cancel=False)
+                return
+
+            if isinstance(frame, CancelFrame):
+                self._set_end_reason(getattr(frame, "reason", None), is_cancel=True)
+                return
 
 except ImportError:  # pragma: no cover - pipecat not installed
 

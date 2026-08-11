@@ -1,6 +1,7 @@
 import math
 from collections import defaultdict
 from datetime import datetime, timedelta
+from typing import Any
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
@@ -8,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
 from ..models import Call, Turn, utcnow
+from ..outcome import compute_outcome
 from ..schemas import LatencyOut, OverviewOut, TimeseriesPoint
 
 
@@ -51,6 +53,8 @@ async def overview(
         Call.sentiment_score,
         Call.transferred,
         Call.end_reason,
+        Call.transfer_reason,
+        Call.non_completion_reason,
         Call.analysis_status,
     )
     if agent_id:
@@ -69,6 +73,10 @@ async def overview(
         if r.sentiment_label in sentiment_dist:
             sentiment_dist[r.sentiment_label] += 1
 
+    outcome_dist = {"transferred": 0, "completed": 0, "non_completed": 0}
+    for r in rows:
+        outcome_dist[compute_outcome(r.success, r.transferred, r.end_reason)] += 1
+
     reasons: dict[str, int] = defaultdict(int)
     for r in rows:
         reasons[r.end_reason or "unknown"] += 1
@@ -76,6 +84,18 @@ async def overview(
         ({"reason": k, "count": v} for k, v in reasons.items()),
         key=lambda x: -x["count"],
     )
+
+    def _breakdown(values: list[str | None]) -> list[dict[str, Any]]:
+        counts: dict[str, int] = defaultdict(int)
+        for v in values:
+            if v:
+                counts[v] += 1
+        return sorted(
+            ({"reason": k, "count": v} for k, v in counts.items()), key=lambda x: -x["count"]
+        )
+
+    transfer_reason_breakdown = _breakdown([r.transfer_reason for r in rows])
+    non_completion_reason_breakdown = _breakdown([r.non_completion_reason for r in rows])
 
     agents = (
         (await session.execute(select(Call.agent_id).distinct().order_by(Call.agent_id)))
@@ -136,7 +156,10 @@ async def overview(
         avg_duration_seconds=(sum(durations) / len(durations) if durations else None),
         avg_sentiment_score=(sum(sentiments) / len(sentiments) if sentiments else None),
         sentiment_distribution=sentiment_dist,
+        outcome_distribution=outcome_dist,
         end_reason_breakdown=reason_breakdown,
+        transfer_reason_breakdown=transfer_reason_breakdown,
+        non_completion_reason_breakdown=non_completion_reason_breakdown,
         agents=list(agents),
         agent_stats=agent_stats,
     )

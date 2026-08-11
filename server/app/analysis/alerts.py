@@ -109,7 +109,8 @@ def _avg_assistant_latency(call: Call) -> float | None:
 
 def _match_per_call(rule: AlertRule, call: Call) -> str | None:
     """Return alert message if the rule matches this call, else None."""
-    label = f"call {call.id[:8]} (agent {call.agent_id})"
+    caller = f", caller {call.from_number}" if call.from_number else ""
+    label = f"call {call.id[:8]} (agent {call.agent_id}{caller})"
     if rule.trigger == "negative_sentiment_call":
         threshold = rule.threshold if rule.threshold is not None else -0.5
         if call.sentiment_score is not None and call.sentiment_score <= threshold:

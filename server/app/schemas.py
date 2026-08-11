@@ -1,7 +1,17 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field, field_validator
+
+from .outcome import compute_outcome
+from .taxonomy import normalize_key
+
+
+class ToolCall(BaseModel):
+    name: str
+    arguments: Any = None
+    result: Any = None
+    success: bool | None = None
 
 
 class TurnIn(BaseModel):
@@ -14,6 +24,7 @@ class TurnIn(BaseModel):
     llm_ttft_ms: float | None = None
     tts_ttfb_ms: float | None = None
     interrupted: bool = False
+    tool_calls: list[ToolCall] | None = None
 
 
 class CallCreate(BaseModel):
@@ -30,6 +41,13 @@ class CallCreate(BaseModel):
     recording_url: str | None = None
     metadata: dict[str, Any] | None = None
     turns: list[TurnIn] = Field(default_factory=list)
+    # Optional: agents that already classify their own calls can send the reason
+    # directly instead of paying for OpenCall to infer it. Whatever is sent here is
+    # authoritative — analysis will not overwrite it. Ideally these match a key from
+    # the configured taxonomy (Settings → Call classification) so the breakdown
+    # charts stay meaningful; unknown values are stored as-is, not rejected.
+    transfer_reason: str | None = Field(default=None, max_length=32)
+    non_completion_reason: str | None = Field(default=None, max_length=32)
 
 
 class TurnOut(BaseModel):
@@ -44,6 +62,7 @@ class TurnOut(BaseModel):
     llm_ttft_ms: float | None
     tts_ttfb_ms: float | None
     interrupted: bool
+    tool_calls: list[ToolCall] | None = None
 
     model_config = {"from_attributes": True}
 
@@ -62,7 +81,13 @@ class CallOut(BaseModel):
     transferred: bool
     recording_url: str | None
     has_recording: bool = False
-    metadata: dict[str, Any] | None = Field(default=None, alias="meta")
+    # Reads the ORM's `meta` column but is published as `metadata`, matching the name
+    # CallCreate accepts. FastAPI serializes with by_alias=True, so without the explicit
+    # serialization_alias this went out as `meta` and the dashboard's `call.metadata`
+    # was permanently undefined.
+    metadata: dict[str, Any] | None = Field(
+        default=None, alias="meta", serialization_alias="metadata"
+    )
     analysis_status: str
     analysis_error: str | None
     summary: str | None
@@ -72,6 +97,9 @@ class CallOut(BaseModel):
     success_score: float | None
     success_rationale: str | None
     structured_data: dict[str, Any] | None
+    transfer_reason: str | None = None
+    non_completion_reason: str | None = None
+    reason_source: str | None = None  # "agent" | "llm" | null
     quality: dict[str, Any] | None
     interruption_count: int
     language: str | None = None
@@ -79,6 +107,13 @@ class CallOut(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True, "populate_by_name": True}
+
+    @computed_field
+    @property
+    def outcome(self) -> str:
+        """One of "transferred" | "completed" | "non_completed" — see outcome.py
+        for the precedence. Derived, not stored."""
+        return compute_outcome(self.success, self.transferred, self.end_reason)
 
 
 class EvaluationResultOut(BaseModel):
@@ -110,6 +145,27 @@ class ExtractionField(BaseModel):
     choices: list[str] | None = None
 
 
+class ReasonCategory(BaseModel):
+    """One bucket in a transfer / non-completion taxonomy.
+
+    `key` is what gets persisted on the call and used as a chart slice and filter
+    value, so it's normalized and length-capped to match the column. `description`
+    is what the LLM reads to decide whether a call belongs in this bucket — it does
+    the real work, so vague descriptions produce vague classification.
+    """
+
+    key: str = Field(min_length=1, max_length=32)
+    description: str = ""
+
+    @field_validator("key")
+    @classmethod
+    def _normalize(cls, v: str) -> str:
+        key = normalize_key(v)
+        if not key:
+            raise ValueError("key must contain at least one non-space character")
+        return key
+
+
 class AnalysisConfigIn(BaseModel):
     summary_enabled: bool = True
     summary_prompt: str | None = None
@@ -120,6 +176,9 @@ class AnalysisConfigIn(BaseModel):
     output_language: str = "english"
     extraction_enabled: bool = True
     extraction_fields: list[ExtractionField] = Field(default_factory=list)
+    classification_enabled: bool = True
+    transfer_reasons: list[ReasonCategory] = Field(default_factory=list)
+    non_completion_reasons: list[ReasonCategory] = Field(default_factory=list)
 
 
 class AnalysisConfigOut(AnalysisConfigIn):
@@ -136,7 +195,10 @@ class OverviewOut(BaseModel):
     avg_duration_seconds: float | None
     avg_sentiment_score: float | None
     sentiment_distribution: dict[str, int]
+    outcome_distribution: dict[str, int] = Field(default_factory=dict)
     end_reason_breakdown: list[dict[str, Any]]
+    transfer_reason_breakdown: list[dict[str, Any]] = Field(default_factory=list)
+    non_completion_reason_breakdown: list[dict[str, Any]] = Field(default_factory=list)
     agents: list[str]
     # Per-agent (per-region) comparison: {agent_id, calls, success_rate, avg_sentiment}
     agent_stats: list[dict[str, Any]] = Field(default_factory=list)

@@ -5,7 +5,14 @@ import Link from "next/link";
 import useSWR from "swr";
 import { fetcher, type CallDetail } from "@/lib/api";
 import { formatClock, formatDate, formatDuration, titleCase } from "@/lib/format";
-import { EndReasonBadge, SentimentBadge, StatusBadge, SuccessBadge } from "@/components/Badges";
+import {
+  EndReasonBadge,
+  NonCompletionReasonBadge,
+  OutcomeBadge,
+  SentimentBadge,
+  StatusBadge,
+  TransferReasonBadge,
+} from "@/components/Badges";
 
 function Panel({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -28,6 +35,20 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
   const [translating, setTranslating] = useState(false);
   const [translateError, setTranslateError] = useState(false);
   const [showTranslation, setShowTranslation] = useState(true);
+  const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
+
+  function toggleTool(key: string) {
+    setExpandedTools((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+  }
+
+  function formatToolValue(value: unknown): string {
+    if (value == null) return "—";
+    return typeof value === "string" ? value : JSON.stringify(value);
+  }
 
   if (!call) return <div className="p-8 text-zinc-500">Loading…</div>;
 
@@ -78,9 +99,14 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
           </h1>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <StatusBadge status={call.analysis_status} />
-            {call.analysis_status === "completed" && <SuccessBadge success={call.success} />}
+            {call.analysis_status === "completed" && <OutcomeBadge outcome={call.outcome} />}
             <SentimentBadge label={call.sentiment_label} />
             <EndReasonBadge reason={call.end_reason} />
+            <TransferReasonBadge reason={call.transfer_reason} source={call.reason_source} />
+            <NonCompletionReasonBadge
+              reason={call.non_completion_reason}
+              source={call.reason_source}
+            />
             {call.language && (
               <span className="inline-flex items-center rounded-full bg-sky-500/15 px-2 py-0.5 text-xs font-medium text-sky-300">
                 {titleCase(call.language)}
@@ -286,6 +312,47 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
                     <p className="leading-relaxed text-zinc-200">
                       {showTranslation && turn.translated_text ? turn.translated_text : turn.text}
                     </p>
+                    {turn.tool_calls && turn.tool_calls.length > 0 && (
+                      <div className="mt-2 space-y-1" onClick={(e) => e.stopPropagation()}>
+                        {turn.tool_calls.map((tc, i) => {
+                          const key = `${turn.idx}-${i}`;
+                          const expanded = expandedTools.has(key);
+                          const failed = tc.success === false;
+                          return (
+                            <div key={key}>
+                              <button
+                                onClick={() => toggleTool(key)}
+                                className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-medium ${
+                                  failed
+                                    ? "border-red-800/60 bg-red-950/30 text-red-300"
+                                    : "border-amber-800/50 bg-amber-950/20 text-amber-300"
+                                }`}
+                              >
+                                🔧 {tc.name}
+                                {failed ? " · failed" : ""}
+                                <span className="text-zinc-500">{expanded ? "▲" : "▼"}</span>
+                              </button>
+                              {expanded && (
+                                <dl className="mt-1 space-y-1 rounded-md border border-zinc-700/40 bg-zinc-950/40 p-2 text-xs">
+                                  <div className="flex gap-2">
+                                    <dt className="shrink-0 text-zinc-500">Arguments</dt>
+                                    <dd className="break-all text-zinc-300">
+                                      {formatToolValue(tc.arguments)}
+                                    </dd>
+                                  </div>
+                                  <div className="flex gap-2">
+                                    <dt className="shrink-0 text-zinc-500">Result</dt>
+                                    <dd className="break-all text-zinc-300">
+                                      {formatToolValue(tc.result)}
+                                    </dd>
+                                  </div>
+                                </dl>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 );
               })}

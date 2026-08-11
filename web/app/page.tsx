@@ -4,7 +4,7 @@ import useSWR from "swr";
 import { fetcher, type Overview, type TimeseriesPoint } from "@/lib/api";
 import { formatDuration, formatPercent } from "@/lib/format";
 import StatCard from "@/components/StatCard";
-import { ReasonBars, SentimentDonut, SuccessChart, VolumeChart } from "@/components/charts";
+import { OutcomeDonut, ReasonBars, SentimentDonut, SuccessChart, VolumeChart } from "@/components/charts";
 import { useState } from "react";
 
 function Panel({ title, children }: { title: string; children: React.ReactNode }) {
@@ -78,6 +78,9 @@ export default function DashboardPage() {
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Panel title="Call volume">{series ? <VolumeChart data={series} /> : null}</Panel>
+        <Panel title="Outcome">
+          {overview ? <OutcomeDonut distribution={overview.outcome_distribution ?? {}} /> : null}
+        </Panel>
         <Panel title="Success rate">{series ? <SuccessChart data={series} /> : null}</Panel>
         <Panel title="Sentiment distribution">
           {overview ? <SentimentDonut distribution={overview.sentiment_distribution} /> : null}
@@ -85,9 +88,19 @@ export default function DashboardPage() {
         <Panel title="End reasons">
           {overview ? <ReasonBars data={overview.end_reason_breakdown} /> : null}
         </Panel>
+        {overview && (overview.transfer_reason_breakdown?.length ?? 0) > 0 && (
+          <Panel title="Why calls get transferred">
+            <ReasonBars data={overview.transfer_reason_breakdown} />
+          </Panel>
+        )}
+        {overview && (overview.non_completion_reason_breakdown?.length ?? 0) > 0 && (
+          <Panel title="Why calls don't complete">
+            <ReasonBars data={overview.non_completion_reason_breakdown} />
+          </Panel>
+        )}
       </div>
 
-      {overview && overview.agent_stats.length > 1 && !agent && (
+      {overview && (overview.agent_stats?.length ?? 0) > 1 && !agent && (
         <Panel title="By agent / region">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">

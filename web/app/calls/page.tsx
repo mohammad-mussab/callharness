@@ -4,23 +4,34 @@ import { useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
 import { fetcher, type CallList, type Overview } from "@/lib/api";
-import { formatDate, formatDuration } from "@/lib/format";
-import { EndReasonBadge, SentimentBadge, StatusBadge, SuccessBadge } from "@/components/Badges";
+import { formatDate, formatDuration, titleCase } from "@/lib/format";
+import {
+  EndReasonBadge,
+  NonCompletionReasonBadge,
+  OutcomeBadge,
+  SentimentBadge,
+  StatusBadge,
+  TransferReasonBadge,
+} from "@/components/Badges";
 
 const PAGE_SIZE = 25;
 
 export default function CallsPage() {
   const [agent, setAgent] = useState("");
-  const [success, setSuccess] = useState("");
+  const [outcome, setOutcome] = useState("");
   const [sentiment, setSentiment] = useState("");
+  const [transferReason, setTransferReason] = useState("");
+  const [nonCompletionReason, setNonCompletionReason] = useState("");
   const [q, setQ] = useState("");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(0);
 
   const params = new URLSearchParams();
   if (agent) params.set("agent_id", agent);
-  if (success) params.set("success", success);
+  if (outcome) params.set("outcome", outcome);
   if (sentiment) params.set("sentiment", sentiment);
+  if (transferReason) params.set("transfer_reason", transferReason);
+  if (nonCompletionReason) params.set("non_completion_reason", nonCompletionReason);
   if (search) params.set("q", search);
   params.set("limit", String(PAGE_SIZE));
   params.set("offset", String(page * PAGE_SIZE));
@@ -63,10 +74,11 @@ export default function CallsPage() {
             <option key={a} value={a}>{a}</option>
           ))}
         </select>
-        <select value={success} onChange={(e) => { setSuccess(e.target.value); setPage(0); }} className={selectClass}>
+        <select value={outcome} onChange={(e) => { setOutcome(e.target.value); setPage(0); }} className={selectClass}>
           <option value="">Any outcome</option>
-          <option value="true">Success</option>
-          <option value="false">Failed</option>
+          <option value="completed">Completed</option>
+          <option value="transferred">Transferred</option>
+          <option value="non_completed">Non-completed</option>
         </select>
         <select value={sentiment} onChange={(e) => { setSentiment(e.target.value); setPage(0); }} className={selectClass}>
           <option value="">Any sentiment</option>
@@ -74,6 +86,30 @@ export default function CallsPage() {
           <option value="neutral">Neutral</option>
           <option value="negative">Negative</option>
         </select>
+        {(overview?.transfer_reason_breakdown?.length ?? 0) > 0 && (
+          <select
+            value={transferReason}
+            onChange={(e) => { setTransferReason(e.target.value); setPage(0); }}
+            className={selectClass}
+          >
+            <option value="">Any transfer reason</option>
+            {overview!.transfer_reason_breakdown.map((r) => (
+              <option key={r.reason} value={r.reason}>{titleCase(r.reason)} ({r.count})</option>
+            ))}
+          </select>
+        )}
+        {(overview?.non_completion_reason_breakdown?.length ?? 0) > 0 && (
+          <select
+            value={nonCompletionReason}
+            onChange={(e) => { setNonCompletionReason(e.target.value); setPage(0); }}
+            className={selectClass}
+          >
+            <option value="">Any non-completion reason</option>
+            {overview!.non_completion_reason_breakdown.map((r) => (
+              <option key={r.reason} value={r.reason}>{titleCase(r.reason)} ({r.count})</option>
+            ))}
+          </select>
+        )}
         <button type="submit" className="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500">
           Filter
         </button>
@@ -106,7 +142,7 @@ export default function CallsPage() {
                 </td>
                 <td className="whitespace-nowrap px-4 py-2.5">
                   {call.analysis_status === "completed" ? (
-                    <SuccessBadge success={call.success} />
+                    <OutcomeBadge outcome={call.outcome} />
                   ) : (
                     <StatusBadge status={call.analysis_status} />
                   )}
@@ -115,7 +151,14 @@ export default function CallsPage() {
                   <SentimentBadge label={call.sentiment_label} />
                 </td>
                 <td className="whitespace-nowrap px-4 py-2.5">
-                  <EndReasonBadge reason={call.end_reason} />
+                  <div className="flex flex-wrap items-center gap-1">
+                    <EndReasonBadge reason={call.end_reason} />
+                    <TransferReasonBadge reason={call.transfer_reason} source={call.reason_source} />
+                    <NonCompletionReasonBadge
+                      reason={call.non_completion_reason}
+                      source={call.reason_source}
+                    />
+                  </div>
                 </td>
                 <td className="max-w-md truncate px-4 py-2.5 text-zinc-400">
                   {call.summary ?? <span className="text-zinc-600">No summary</span>}

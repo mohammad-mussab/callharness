@@ -56,8 +56,8 @@ task = PipelineTask(
 
 If your pipeline doesn't use `TranscriptProcessor` (e.g. you capture transcripts at
 the frame level), use the all-in-one frame observer instead — it captures transcript
-turns, end-to-end response latency, STT/LLM/TTS components, interruptions, and
-transfers, all from one observer:
+turns, end-to-end response latency, STT/LLM/TTS components, interruptions, tool calls,
+transfers, and a deterministic `end_reason`, all from one observer:
 
 ```python
 from opencall_sdk.pipecat import OpenCallFrameObserver, create_recorder
@@ -68,10 +68,25 @@ observer = OpenCallFrameObserver(
 )
 # add `observer` to your PipelineTask/PipelineWorker observers, then on call end:
 await recorder.flush(
-    end_reason="transfer" if observer.transferred else "completed",
+    end_reason=observer.finalize_end_reason(),  # "completed" | "transferred" | "error" | ...
     transferred=observer.transferred,
     recording_bytes=wav_bytes,   # optional in-memory recording upload
 )
 ```
+
+`finalize_end_reason()` gives you the best reason available *right now*: `"error"`
+if a fatal `ErrorFrame` occurred, otherwise the explicit `reason=` you passed to
+`EndTaskFrame`/`CancelTaskFrame` if the pipeline already saw one before you called
+this (e.g. `EndTaskFrame(reason="silence_timeout")` from a `UserIdleProcessor`
+callback), otherwise `"transferred"` if a transfer fired, otherwise `"completed"`
+(pass a different `default=` if that's not right for your integration).
+
+Call `finalize_end_reason()` — not the raw `observer.end_reason` attribute — from
+your own disconnect/teardown handler (e.g. a transport's `on_client_disconnected`).
+That fires *before* an `EndFrame`/`CancelFrame` has necessarily propagated through
+the pipeline, so `.end_reason` may still be `None` at that point; `finalize_end_reason()`
+only depends on state (fatal error, transferred) that's already known live during the
+call, so it's correct regardless of teardown ordering. `observer.last_error` holds the
+most recent error message, useful to drop into `metadata` for debugging.
 
 See [examples/pipecat_bot.py](../examples/pipecat_bot.py) for a full working bot.

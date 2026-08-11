@@ -1,3 +1,10 @@
+export type ToolCall = {
+  name: string;
+  arguments: unknown;
+  result: unknown;
+  success: boolean | null;
+};
+
 export type Turn = {
   idx: number;
   role: "user" | "assistant";
@@ -10,6 +17,7 @@ export type Turn = {
   llm_ttft_ms: number | null;
   tts_ttfb_ms: number | null;
   interrupted: boolean;
+  tool_calls: ToolCall[] | null;
 };
 
 export type Quality = {
@@ -49,6 +57,10 @@ export type Call = {
   success_score: number | null;
   success_rationale: string | null;
   structured_data: Record<string, unknown> | null;
+  transfer_reason: string | null;
+  non_completion_reason: string | null;
+  reason_source: "agent" | "llm" | null;
+  outcome: "transferred" | "completed" | "non_completed";
   quality: Quality | null;
   interruption_count: number;
   language: string | null;
@@ -81,7 +93,10 @@ export type Overview = {
   avg_duration_seconds: number | null;
   avg_sentiment_score: number | null;
   sentiment_distribution: Record<string, number>;
+  outcome_distribution: Record<string, number>;
   end_reason_breakdown: { reason: string; count: number }[];
+  transfer_reason_breakdown: { reason: string; count: number }[];
+  non_completion_reason_breakdown: { reason: string; count: number }[];
   agents: string[];
   agent_stats: AgentStats[];
 };
@@ -110,6 +125,11 @@ export type ExtractionField = {
   choices: string[] | null;
 };
 
+export type ReasonCategory = {
+  key: string;
+  description: string;
+};
+
 export type AnalysisConfig = {
   summary_enabled: boolean;
   summary_prompt: string | null;
@@ -120,6 +140,9 @@ export type AnalysisConfig = {
   output_language: string;
   extraction_enabled: boolean;
   extraction_fields: ExtractionField[];
+  classification_enabled: boolean;
+  transfer_reasons: ReasonCategory[];
+  non_completion_reasons: ReasonCategory[];
 };
 
 export type LatencyStats = {

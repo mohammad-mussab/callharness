@@ -61,6 +61,15 @@ _EMPTY_MARKERS = (
     "non disponibile",
     "nessun dato",
     "non ho trovato",
+    # Taken verbatim from Piemonte's production logs — these are what the real
+    # knowledge_base_new / call_graph tools return on a miss. Neither matched the
+    # generic markers above ("non ho una risposta" shares no substring with "non ho
+    # trovato"), so every gap of the second kind was being scored "ok" and silently
+    # dropped from the report. Match on the distinctive stem rather than the whole
+    # sentence, so a reworded message keeps being caught.
+    "non ho una risposta",
+    "cerca nel rag",
+    "informazioni specifiche",
 )
 
 # Keys whose value is the question the agent actually asked the lookup. Preferred over

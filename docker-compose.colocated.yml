@@ -1,0 +1,89 @@
+# CallHarness co-located on a region agent VM.
+#
+# WHY THIS FILE EXISTS SEPARATELY FROM docker-compose.yml
+# The plain compose file is for a machine that does nothing else. This one assumes
+# it is sharing a host with live voice agents, which changes three things: it must
+# never be restarted by an agent deploy, it must never starve a call of CPU, and it
+# must never publish patient data on the VM's public IP.
+#
+#   cd ~/callharness && docker compose -f docker-compose.colocated.yml up -d --build
+#
+# The `name:` below pins the compose project, so `docker compose down` run from the
+# AGENT directory cannot take this stack with it, and an agent redeploy cannot
+# restart Postgres mid-write.
+name: callharness
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: callharness
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: callharness
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # No `ports:` at all — Postgres is reachable only over the compose network.
+    # Nothing outside this stack has any business connecting to it.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U callharness"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits: { memory: 768M, cpus: "0.25" }
+
+  api:
+    build: ./server
+    environment:
+      CALLHARNESS_DATABASE_URL: postgresql+asyncpg://callharness:${POSTGRES_PASSWORD:?}@db:5432/callharness
+      CALLHARNESS_DATA_DIR: /data
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Shared secret the agents send as x-api-key. Required here, not optional:
+      # leaving it empty disables auth on every write endpoint (see app/auth.py).
+      CALLHARNESS_API_KEY: ${CALLHARNESS_API_KEY:?set CALLHARNESS_API_KEY}
+      # Audio is the only thing that can fill this VM's disk and take the voice
+      # agents down with it (~3MB per call). Default 0 = do not keep recordings.
+      # Raise it once you have measured real call volume against real free space.
+      CALLHARNESS_RECORDING_RETENTION_DAYS: ${CALLHARNESS_RECORDING_RETENTION_DAYS:-0}
+    volumes:
+      - calls_data:/data
+    ports:
+      # Bound to the VNet private IP, NEVER 0.0.0.0. This host has a public IP and
+      # every GET endpoint is unauthenticated — /calls/{id} returns a full patient
+      # transcript and /calls/{id}/audio returns the recording. Publishing this on
+      # the public interface would put patient data on the open internet.
+      # Set CALLHARNESS_BIND_IP to this VM's private address so the other region
+      # VMs can reach it; it falls back to loopback, which is safe but unreachable.
+      - "${CALLHARNESS_BIND_IP:-127.0.0.1}:8010:8010"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        # Deliberately small. The analysis worker spends its life awaiting the LLM,
+        # so it needs almost no CPU — and a live call must always win.
+        limits: { memory: 1G, cpus: "0.5" }
+
+  web:
+    build: ./web
+    environment:
+      CALLHARNESS_API_URL: http://api:8010
+    ports:
+      # Loopback only. Reach the dashboard with an SSH tunnel:
+      #   ssh -L 3010:127.0.0.1:3010 azureuser@<vm>
+      # then open http://localhost:3010
+      - "127.0.0.1:3010:3010"
+    depends_on:
+      - api
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits: { memory: 512M, cpus: "0.25" }
+
+volumes:
+  pgdata:
+  calls_data:

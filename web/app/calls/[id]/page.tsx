@@ -13,6 +13,7 @@ import {
   StatusBadge,
   TransferReasonBadge,
 } from "@/components/Badges";
+import WaveformPlayer from "@/components/WaveformPlayer";
 
 function Panel({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -160,13 +161,10 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
               Click any line in the transcript to jump to that moment
             </div>
           </div>
-          <audio
-            ref={audioRef}
-            controls
-            preload="metadata"
+          <WaveformPlayer
             src={`/api/v1/calls/${call.id}/audio`}
-            className="w-full"
-            onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
+            audioRef={audioRef}
+            onTimeUpdate={setCurrentTime}
           />
           <div className="mt-2 text-xs text-zinc-600">
             Recordings are kept for a limited period and deleted automatically; the

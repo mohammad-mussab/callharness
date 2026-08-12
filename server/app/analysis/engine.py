@@ -102,9 +102,27 @@ def build_user_prompt(call: Call, config: AnalysisConfig) -> str:
         schema["sentiment"] = {"label": "string", "score": "number"}
 
     if config.success_enabled:
+        # The default deliberately turns on what the caller RECEIVED, not on what the
+        # assistant produced. The older wording tested only for errors, dead-ends and
+        # frustration — a caller who hung up in the middle of a correct answer is none
+        # of those three, so every such call was scored a success, with the judge
+        # writing "the assistant began to provide it... no unresolved issues".
+        #
+        # This leans on a guarantee the SDK now provides: an assistant turn is
+        # truncated to the words whose playback timestamp precedes the hangup, so a
+        # turn that breaks off mid-sentence is evidence the caller stopped hearing
+        # there. Without that guarantee the transcript showed the full sentence and
+        # this instruction would have nothing to key on.
         criteria = config.success_prompt or (
-            "The call is successful if the caller's need was handled without "
-            "unresolved errors, dead-ends, or the caller giving up frustrated."
+            "The call is successful only if the caller actually received what they "
+            "asked for. Judge what reached the caller, not what the assistant intended "
+            "to say: the transcript contains only what the caller actually heard, so a "
+            "final assistant turn that breaks off mid-sentence means the caller hung up "
+            "while it was still speaking and never heard the rest. Treat that as a "
+            "failure when the answer itself was still being delivered, but not when the "
+            "substantive answer had already been given and only a closing pleasantry "
+            "was cut off. Unresolved errors, dead-ends, or the caller giving up "
+            "frustrated are failures too."
         )
         if config.success_rubric == "numeric_scale":
             sections.append(

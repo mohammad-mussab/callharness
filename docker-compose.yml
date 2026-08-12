@@ -32,14 +32,13 @@ services:
         condition: service_healthy
 
   web:
-    build:
-      context: ./web
-      # Build arg, not just runtime env: next build bakes the rewrite destination
-      # into the routes manifest. See web/Dockerfile.
-      args:
-        CALLHARNESS_API_URL: http://api:8010
+    build: ./web
     environment:
       CALLHARNESS_API_URL: http://api:8010
+      # Read server-side by app/api/[...path]/route.ts and attached to proxied
+      # requests. Never sent to the browser. Without it every write from the
+      # dashboard 401s as soon as the API key is enabled.
+      CALLHARNESS_API_KEY: ${CALLHARNESS_API_KEY:-}
     ports:
       - "3010:3010"
     depends_on:

@@ -34,7 +34,7 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
   const [currentTime, setCurrentTime] = useState(0);
   const [reanalyzing, setReanalyzing] = useState(false);
   const [translating, setTranslating] = useState(false);
-  const [translateError, setTranslateError] = useState(false);
+  const [translateError, setTranslateError] = useState<string | null>(null);
   const [showTranslation, setShowTranslation] = useState(true);
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
 
@@ -73,16 +73,31 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
 
   async function translate() {
     setTranslating(true);
-    setTranslateError(false);
+    setTranslateError(null);
     try {
       const res = await fetch(`/api/v1/calls/${id}/translate?language=english`, {
         method: "POST",
       });
-      if (!res.ok) throw new Error(String(res.status));
+      // Report what actually went wrong. This used to show one fixed "check your
+      // LLM key" message for every failure, which sent a real 401 investigation
+      // down entirely the wrong path.
+      if (!res.ok) {
+        if (res.status === 401)
+          throw new Error(
+            "Not authorised (401). The dashboard could not authenticate to the API — " +
+              "set CALLHARNESS_API_KEY on the web container to the same value as the server."
+          );
+        if (res.status === 502)
+          throw new Error("Cannot reach the CallHarness API (502). Is the api container up?");
+        const detail = await res.text().catch(() => "");
+        throw new Error(
+          `Translation failed (${res.status}). ${detail.slice(0, 160)}`.trim()
+        );
+      }
       await mutate();
       setShowTranslation(true);
-    } catch {
-      setTranslateError(true);
+    } catch (e) {
+      setTranslateError(e instanceof Error ? e.message : "Translation failed.");
     } finally {
       setTranslating(false);
     }
@@ -149,7 +164,7 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
 
       {translateError && (
         <div className="rounded-xl border border-red-900/50 bg-red-950/30 p-3 text-sm text-red-300">
-          Translation failed — check that the server has an LLM key configured, then try again.
+          {translateError}
         </div>
       )}
 

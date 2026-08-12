@@ -33,8 +33,14 @@ export function StatusBadge({ status }: { status: string }) {
   );
 }
 
+// Renders nothing when unset, like its sibling reason badges. It used to emit a "—"
+// placeholder, which put a stray dash in front of every non-transferred call's badge
+// ("— Hung Up Silently"): agents deliberately leave end_reason null when the call
+// wasn't transferred, so CallHarness's own analysis decides the outcome. A group of
+// badges needs at most one placeholder, and that belongs to whoever lays the group
+// out — see the calls table, which shows a single dash only when the row has none.
 export function EndReasonBadge({ reason }: { reason: string | null }) {
-  if (!reason) return <span className="text-zinc-500 text-xs">—</span>;
+  if (!reason) return null;
   return (
     <span className={`${badgeBase} bg-zinc-700/40 text-zinc-300`} title={labelWithKey(reason)}>
       {label(reason)}

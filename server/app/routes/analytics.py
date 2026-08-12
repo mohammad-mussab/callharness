@@ -17,6 +17,8 @@ from ..disputes import (
     classify,
     is_overcount,
 )
+from ..analysis.engine import non_completion_categories, transfer_categories
+from ..analysis.worker import get_or_create_config
 from ..knowledge_gaps import cluster_questions, extract_gaps
 from ..models import Call, Turn, utcnow
 from ..outcome import compute_outcome
@@ -183,11 +185,23 @@ async def disputes(
     matrix: dict[tuple[str, str], int] = defaultdict(int)
     disputed: list[tuple[Call, str, str]] = []  # (call, kind, callharness_outcome)
 
+    # The configured taxonomy, so a free-text agent reason in another language isn't
+    # mistaken for a disagreement. See disputes.classify().
+    config = await get_or_create_config(session)
+    known_reason_keys = {
+        c["key"]
+        for c in (transfer_categories(config) + non_completion_categories(config))
+        if isinstance(c, dict) and c.get("key")
+    }
+
     for call in rows:
         oc_outcome = compute_outcome(call.success, call.transferred, call.end_reason)
         oc_reason = call.transfer_reason or call.non_completion_reason
         verdict = classify(
-            meta=call.meta, callharness_outcome=oc_outcome, callharness_reason=oc_reason
+            meta=call.meta,
+            callharness_outcome=oc_outcome,
+            callharness_reason=oc_reason,
+            known_reason_keys=known_reason_keys,
         )
         if verdict is None:
             continue  # agent sent no verdict — nothing to compare

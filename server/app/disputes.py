@@ -63,12 +63,24 @@ def classify(
     meta: dict[str, Any] | None,
     callharness_outcome: str,
     callharness_reason: str | None,
+    known_reason_keys: set[str] | None = None,
 ) -> str | None:
     """Return AGREED / OUTCOME_DISPUTE / REASON_DISPUTE, or None if not comparable.
 
     A reason dispute is only reported when *both* sides actually named a reason —
     CallHarness leaving a reason null (e.g. a completed call, which has no transfer or
     non-completion reason) is not a disagreement about anything.
+
+    `known_reason_keys` is the configured taxonomy. It matters because the agent's
+    `motivazione` is free text in its own language, and comparing it to a CallHarness
+    key by string equality declares a disagreement between two ways of saying the same
+    thing: "Interrotta dal paziente" and "caller_hangup_silent" are the SAME verdict,
+    but they never compare equal, so nearly every same-bucket call was reported as a
+    reason dispute and the page filled with noise. Unless the agent's reason is
+    expressible in the configured taxonomy, the two sides are speaking different
+    vocabularies and no disagreement can be inferred — they agreed on the outcome,
+    which is the comparison that carries meaning. Agents that want their reasons
+    compared should send taxonomy keys.
     """
     theirs = agent_outcome(meta)
     if theirs is None:
@@ -77,7 +89,10 @@ def classify(
         return OUTCOME_DISPUTE
 
     their_reason = agent_reason_key(meta)
-    if their_reason and callharness_reason and their_reason != callharness_reason:
+    comparable_reason = their_reason is not None and (
+        known_reason_keys is None or their_reason in known_reason_keys
+    )
+    if comparable_reason and callharness_reason and their_reason != callharness_reason:
         return REASON_DISPUTE
     return AGREED
 

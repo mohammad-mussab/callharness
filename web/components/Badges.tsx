@@ -18,9 +18,23 @@ export function SentimentBadge({ label }: { label: string | null }) {
   );
 }
 
+// analysis_status describes the ANALYSIS pipeline, not the call. Its "completed"
+// means "the LLM finished", which is a completely different claim from the outcome
+// badge's "Completed" — yet it rendered the same word in a similar colour on every
+// analysed call, so a non-completed call showed "Completed  Non-completed" side by
+// side. Once analysis has succeeded there is nothing to report: the outcome badge
+// is the answer, and its presence already implies analysis ran. So this renders
+// only the states that actually need attention.
+const STATUS_LABELS: Record<string, string> = {
+  pending: "Analysis queued",
+  processing: "Analyzing…",
+  failed: "Analysis failed",
+  skipped: "Not analyzed",
+};
+
 export function StatusBadge({ status }: { status: string }) {
+  if (status === "completed") return null;
   const styles: Record<string, string> = {
-    completed: "bg-indigo-500/15 text-indigo-300",
     pending: "bg-amber-500/15 text-amber-400",
     processing: "bg-amber-500/15 text-amber-400",
     failed: "bg-red-500/15 text-red-400",
@@ -28,7 +42,7 @@ export function StatusBadge({ status }: { status: string }) {
   };
   return (
     <span className={`${badgeBase} ${styles[status] ?? styles.skipped}`}>
-      {titleCase(status)}
+      {STATUS_LABELS[status] ?? titleCase(status)}
     </span>
   );
 }

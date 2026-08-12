@@ -32,7 +32,12 @@ services:
         condition: service_healthy
 
   web:
-    build: ./web
+    build:
+      context: ./web
+      # Build arg, not just runtime env: next build bakes the rewrite destination
+      # into the routes manifest. See web/Dockerfile.
+      args:
+        CALLHARNESS_API_URL: http://api:8010
     environment:
       CALLHARNESS_API_URL: http://api:8010
     ports:

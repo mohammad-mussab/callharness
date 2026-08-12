@@ -33,3 +33,7 @@ tmp/
 Claude.md
 # Build artifacts
 sdk/dist/
+
+# Local convenience script: opens the SSH tunnel to the Lazio VM dashboard.
+# Machine-specific (uses a local key path) - not part of the project.
+open-lazio-dashboard.bat

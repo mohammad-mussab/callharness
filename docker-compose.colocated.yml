@@ -53,8 +53,12 @@ services:
       # streamed when someone opens a call. That is deliberate on this host — unlike
       # recordings, which the retention above bounds, logs are worth keeping forever,
       # so copying them would grow without limit on the disk the voice agents share.
-      # The agents on this VM already export this variable for their own uploader.
-      CALLHARNESS_AZURE_STORAGE_CONNECTION_STRING: ${AZURE_STORAGE_CONNECTION_STRING:-}
+      # Either name works in .env: the CALLHARNESS_-prefixed one, matching every
+      # other setting here, or the bare AZURE_ one the agents on this VM already
+      # export for their own uploader. Accepting only the bare name silently
+      # produced an empty value for anyone who wrote the prefixed one, which reads
+      # as "Azure not configured" rather than as a typo.
+      CALLHARNESS_AZURE_STORAGE_CONNECTION_STRING: ${CALLHARNESS_AZURE_STORAGE_CONNECTION_STRING:-${AZURE_STORAGE_CONNECTION_STRING:-}}
     volumes:
       - calls_data:/data
     ports:

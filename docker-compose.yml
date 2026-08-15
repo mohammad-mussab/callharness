@@ -26,7 +26,9 @@ services:
       # Optional: where the agents upload their raw per-call logs. With this set,
       # each call's log is located in Blob Storage and shown on the call page.
       # Leave empty to turn the feature off entirely.
-      CALLHARNESS_AZURE_STORAGE_CONNECTION_STRING: ${AZURE_STORAGE_CONNECTION_STRING:-}
+      # Either name works in .env — the CALLHARNESS_-prefixed one or the bare
+      # AZURE_ one that the Azure SDKs and the agents already use.
+      CALLHARNESS_AZURE_STORAGE_CONNECTION_STRING: ${CALLHARNESS_AZURE_STORAGE_CONNECTION_STRING:-${AZURE_STORAGE_CONNECTION_STRING:-}}
     volumes:
       - calls_data:/data
     ports:

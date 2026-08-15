@@ -47,6 +47,7 @@ export type Call = {
   transferred: boolean;
   recording_url: string | null;
   has_recording: boolean;
+  has_log: boolean;
   metadata: Record<string, unknown> | null;
   analysis_status: string;
   analysis_error: string | null;
@@ -268,6 +269,23 @@ export const fetcher = async (url: string) => {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`API error ${res.status}`);
   return res.json();
+};
+
+// For endpoints that return text rather than JSON — currently just the raw agent log.
+// It surfaces the API's `detail` when there is one, so the log panel can tell "no log
+// linked to this call" apart from "the log is no longer in Azure".
+export const textFetcher = async (url: string) => {
+  const res = await fetch(url);
+  if (!res.ok) {
+    let detail = `API error ${res.status}`;
+    try {
+      detail = (await res.json()).detail ?? detail;
+    } catch {
+      /* not JSON — keep the status message */
+    }
+    throw new Error(detail);
+  }
+  return res.text();
 };
 
 export async function apiSend(url: string, method: string, body?: unknown) {

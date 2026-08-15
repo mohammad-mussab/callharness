@@ -3,7 +3,7 @@
 import { use, useRef, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
-import { fetcher, type CallDetail } from "@/lib/api";
+import { fetcher, textFetcher, type CallDetail } from "@/lib/api";
 import { formatClock, formatDate, formatDuration, titleCase } from "@/lib/format";
 import {
   EndReasonBadge,
@@ -14,6 +14,7 @@ import {
   TransferReasonBadge,
 } from "@/components/Badges";
 import WaveformPlayer from "@/components/WaveformPlayer";
+import LogViewer from "@/components/LogViewer";
 
 function Panel({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -37,6 +38,15 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
   const [translateError, setTranslateError] = useState<string | null>(null);
   const [showTranslation, setShowTranslation] = useState(true);
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
+  const [logOpen, setLogOpen] = useState(false);
+  // Conditional key: nothing is fetched until the panel is expanded. That matters
+  // because the detail endpoint above re-polls every 3s while analysis is running,
+  // and a ~200KB log riding along with it would be pulled over and over.
+  const { data: logText, error: logError } = useSWR<string>(
+    logOpen ? `/api/v1/calls/${id}/log` : null,
+    textFetcher,
+    { revalidateOnFocus: false }
+  );
 
   function toggleTool(key: string) {
     setExpandedTools((prev) => {
@@ -185,6 +195,31 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
             Recordings are kept for a limited period and deleted automatically; the
             transcript and analysis are kept indefinitely.
           </div>
+        </div>
+      )}
+
+      {call.has_log && (
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+          <button
+            onClick={() => setLogOpen((v) => !v)}
+            className="flex w-full items-center justify-between gap-2 text-left"
+          >
+            <span className="text-sm font-medium text-zinc-200">Agent log</span>
+            <span className="text-xs text-zinc-500">
+              {logOpen ? "Hide" : "Show"} the agent's full log for this call
+            </span>
+          </button>
+          {logOpen && (
+            <div className="mt-3">
+              {logError ? (
+                <div className="text-sm text-red-300">{logError.message}</div>
+              ) : logText === undefined ? (
+                <div className="text-sm text-zinc-500">Loading log…</div>
+              ) : (
+                <LogViewer text={logText} downloadUrl={`/api/v1/calls/${call.id}/log?download=1`} />
+              )}
+            </div>
+          )}
         </div>
       )}
 

@@ -48,6 +48,13 @@ services:
       # agents down with it (~3MB per call). Default 0 = do not keep recordings.
       # Raise it once you have measured real call volume against real free space.
       CALLHARNESS_RECORDING_RETENTION_DAYS: ${CALLHARNESS_RECORDING_RETENTION_DAYS:-0}
+      # Read-only access to the container the agents already upload their per-call
+      # logs to. Only the blob NAME is stored here; the bytes stay in Azure and are
+      # streamed when someone opens a call. That is deliberate on this host — unlike
+      # recordings, which the retention above bounds, logs are worth keeping forever,
+      # so copying them would grow without limit on the disk the voice agents share.
+      # The agents on this VM already export this variable for their own uploader.
+      CALLHARNESS_AZURE_STORAGE_CONNECTION_STRING: ${AZURE_STORAGE_CONNECTION_STRING:-}
     volumes:
       - calls_data:/data
     ports:

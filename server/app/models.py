@@ -35,6 +35,16 @@ class Call(Base):
     recording_url: Mapped[str | None] = mapped_column(String(1024))
     meta: Mapped[dict | None] = mapped_column(JSON, default=None)
 
+    # Where this call's raw agent log lives in Azure Blob Storage, e.g.
+    # "lazio/call-logs/2026-08-14/20260814_054036_f8c9881e_393473397746.log".
+    # Only the pointer is stored — the bytes stay in Azure and are streamed on demand,
+    # because unlike recordings (capped by recording_retention_days) logs are worth
+    # keeping forever, and 12.5GB of them already exist there. See azure_logs.py.
+    log_blob: Mapped[str | None] = mapped_column(String(512))
+    # When the log was last looked for. Stamped on a miss too, so calls whose agent
+    # never managed to upload a log stop being re-scanned on every pass.
+    log_checked_at: Mapped[datetime | None] = mapped_column(DateTime)
+
     # Conversation-quality metrics computed at ingest (no LLM needed)
     quality: Mapped[dict | None] = mapped_column(JSON, default=None)
     interruption_count: Mapped[int] = mapped_column(Integer, default=0)

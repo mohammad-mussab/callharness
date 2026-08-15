@@ -23,6 +23,10 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       # Optional: protect write endpoints
       CALLHARNESS_API_KEY: ${CALLHARNESS_API_KEY:-}
+      # Optional: where the agents upload their raw per-call logs. With this set,
+      # each call's log is located in Blob Storage and shown on the call page.
+      # Leave empty to turn the feature off entirely.
+      CALLHARNESS_AZURE_STORAGE_CONNECTION_STRING: ${AZURE_STORAGE_CONNECTION_STRING:-}
     volumes:
       - calls_data:/data
     ports:

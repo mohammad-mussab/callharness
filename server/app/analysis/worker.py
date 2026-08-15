@@ -8,9 +8,10 @@ import asyncio
 import logging
 from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import selectinload
 
+from .. import azure_logs
 from ..config import settings
 from ..db import SessionLocal
 from ..models import AnalysisConfig, Call, utcnow
@@ -77,6 +78,43 @@ async def _expire_recordings() -> int:
         "Deleted %d recording(s) older than %d days (transcripts kept)", len(rows), days
     )
     return len(rows)
+
+
+async def _reconcile_logs() -> int:
+    """Point recent calls at their raw agent log in Azure. Returns how many were matched.
+
+    Scoped two ways so a steady-state instance costs nothing: it returns before touching
+    Azure when no call needs looking up, and it ignores calls older than
+    azure_log_lookback_days. Past that window the blob is never going to appear — the
+    agent uploads once with no retry and deletes un-uploaded leftovers after a week — so
+    scanning for them again would be pure waste. scripts/sync_azure_logs.py --recheck is
+    the escape hatch for a one-off historical sweep.
+    """
+    if not azure_logs.enabled():
+        return 0
+
+    now = utcnow()
+    cutoff = now - timedelta(days=settings.azure_log_lookback_days)
+    # A call already looked for gets another chance an hour later: the usual reason for
+    # a miss is that the agent hadn't finished uploading, and that resolves itself.
+    retry_before = now - timedelta(hours=1)
+    async with SessionLocal() as session:
+        rows = (
+            await session.execute(
+                select(Call).where(
+                    Call.log_blob.is_(None),
+                    Call.external_id.is_not(None),
+                    Call.started_at >= cutoff,
+                    or_(Call.log_checked_at.is_(None), Call.log_checked_at < retry_before),
+                )
+            )
+        ).scalars().all()
+        if not rows:
+            return 0
+        matched = await azure_logs.resolve(session, rows)
+    if matched:
+        logger.info("Linked %d of %d call(s) to their Azure log", matched, len(rows))
+    return matched
 
 
 async def _process_one(call_id: str) -> None:
@@ -159,6 +197,7 @@ async def run_worker(stop_event: asyncio.Event) -> None:
     )
     last_window_check = 0.0
     last_recording_cleanup = 0.0
+    last_log_sync = 0.0
     while not stop_event.is_set():
         try:
             claimed = await _claim_pending(settings.analysis_concurrency)
@@ -181,6 +220,12 @@ async def run_worker(stop_event: asyncio.Event) -> None:
                 await _expire_recordings()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Recording cleanup failed: %s", exc)
+        if now - last_log_sync >= settings.azure_log_sync_interval_seconds:
+            last_log_sync = now
+            try:
+                await _reconcile_logs()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Azure log sync failed: %s", exc)
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=settings.analysis_poll_seconds)
         except asyncio.TimeoutError:

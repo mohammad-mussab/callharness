@@ -1,11 +1,13 @@
+import logging
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from .. import azure_logs
 from ..analysis.translate import translate_call
 from ..auth import require_api_key
 from ..config import settings
@@ -22,6 +24,8 @@ from ..schemas import (
 from ..storage import content_type_for, save_recording
 from ..taxonomy import normalize_key
 
+logger = logging.getLogger("callharness.calls")
+
 router = APIRouter(prefix="/api/v1/calls", tags=["calls"])
 
 
@@ -29,7 +33,25 @@ def _to_out(call: Call, detail: bool = False) -> CallOut | CallDetailOut:
     cls = CallDetailOut if detail else CallOut
     out = cls.model_validate(call)
     out.has_recording = bool(call.recording_path)
+    out.has_log = bool(call.log_blob)
     return out
+
+
+async def _resolve_log_once(session: AsyncSession, call: Call) -> None:
+    """Look for this call's log blob if we never have. Best-effort, never raises.
+
+    The dashboard only renders the log panel when has_log is true, so a call whose
+    blob hasn't been located yet would show nothing and never reach the log endpoint.
+    Resolving here means a call opened seconds after ingest gets its log on first view
+    instead of after the next worker tick. The log_checked_at guard makes this happen
+    at most once per call, at the cost of a single folder listing.
+    """
+    if call.log_blob or call.log_checked_at is not None or not azure_logs.enabled():
+        return
+    try:
+        await azure_logs.resolve(session, [call])
+    except Exception as exc:  # noqa: BLE001 - a call detail must render without Azure
+        logger.warning("Log lookup for call %s failed: %s", call.id, exc)
 
 
 @router.post("", response_model=CallOut, status_code=201, dependencies=[Depends(require_api_key)])
@@ -210,6 +232,7 @@ async def get_call(call_id: str, session: AsyncSession = Depends(get_session)):
     call = (await session.execute(query)).scalar_one_or_none()
     if call is None:
         raise HTTPException(status_code=404, detail="Call not found")
+    await _resolve_log_once(session, call)
     out = _to_out(call, detail=True)
     out.evaluations = [
         EvaluationResultOut.model_validate(r) for r in call.evaluation_results
@@ -241,6 +264,43 @@ async def get_audio(call_id: str, session: AsyncSession = Depends(get_session)):
     if not call.recording_path:
         raise HTTPException(status_code=404, detail="No recording for this call")
     return FileResponse(call.recording_path, media_type=content_type_for(call.recording_path))
+
+
+@router.get("/{call_id}/log")
+async def get_log(
+    call_id: str, download: bool = False, session: AsyncSession = Depends(get_session)
+):
+    """The agent's raw log for this call, streamed out of Azure.
+
+    Unauthenticated, like /audio and every other GET here — the protection is the API
+    being bound to a private IP (see docker-compose.colocated.yml). Worth naming what
+    that means for this route specifically: these logs are the most PII-dense thing
+    CallHarness serves. They carry plaintext patient names, fiscal codes, dates of
+    birth and raw caller numbers, where the call row itself only ever holds a hashed
+    from_number. Do not put this port on a public interface.
+    """
+    call = await _get_call(session, call_id)
+    await _resolve_log_once(session, call)
+    if not call.log_blob:
+        # Distinguished from the 404 below so the dashboard can say which happened.
+        raise HTTPException(status_code=404, detail="No log linked to this call")
+
+    try:
+        content = await azure_logs.fetch_log(call.log_blob)
+    except azure_logs.LogUnavailable as exc:
+        # Storage is misconfigured or unreachable — a server-side problem, and a
+        # different thing from the log not existing. 502 so it can't be mistaken for
+        # one, with the reason in the body so the panel can show it.
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if content is None:
+        raise HTTPException(status_code=404, detail="Log is no longer available in Azure")
+
+    headers = {}
+    if download:
+        headers["Content-Disposition"] = (
+            f'attachment; filename="{call.log_blob.rsplit("/", 1)[-1]}"'
+        )
+    return Response(content, media_type="text/plain; charset=utf-8", headers=headers)
 
 
 @router.post(

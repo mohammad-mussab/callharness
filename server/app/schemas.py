@@ -81,6 +81,9 @@ class CallOut(BaseModel):
     transferred: bool
     recording_url: str | None
     has_recording: bool = False
+    # Whether this call's raw agent log has been located in Azure. Like has_recording
+    # it is derived in _to_out(), not a column — the blob name itself is internal.
+    has_log: bool = False
     # Reads the ORM's `meta` column but is published as `metadata`, matching the name
     # CallCreate accepts. FastAPI serializes with by_alias=True, so without the explicit
     # serialization_alias this went out as `meta` and the dashboard's `call.metadata`

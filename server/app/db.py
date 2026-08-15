@@ -31,6 +31,9 @@ COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
     ("analysis_config", "classification_enabled", "BOOLEAN DEFAULT TRUE"),
     ("analysis_config", "transfer_reasons", "JSON"),
     ("analysis_config", "non_completion_reasons", "JSON"),
+    # TIMESTAMP, not DATETIME — the latter is a SQLite-ism Postgres rejects.
+    ("calls", "log_blob", "VARCHAR(512)"),
+    ("calls", "log_checked_at", "TIMESTAMP"),
 ]
 
 

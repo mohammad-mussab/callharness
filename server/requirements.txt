@@ -8,3 +8,6 @@ pydantic>=2.7
 pydantic-settings>=2.2
 httpx>=0.27
 python-multipart>=0.0.9
+# Locating each call's raw agent log in Blob Storage (app/azure_logs.py). The sync
+# client is used from a thread, which is why the [aio] extra isn't needed.
+azure-storage-blob>=12.19

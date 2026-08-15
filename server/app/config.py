@@ -42,6 +42,36 @@ class Settings(BaseSettings):
     # How often the cleanup pass runs. Hourly is plenty for a daily-granularity policy.
     recording_cleanup_interval_seconds: float = 3600.0
 
+    # Azure Blob Storage holding the agents' raw per-call logs (CALLHARNESS_AZURE_*).
+    # Leave the connection string unset to disable log linking entirely — every entry
+    # point in azure_logs.py degrades to a no-op, so this is also the switch for any
+    # install that isn't the Italian healthcare deployment.
+    # The unprefixed name is accepted too, because that is what the agent VMs already
+    # export for their own uploader.
+    azure_storage_connection_string: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "CALLHARNESS_AZURE_STORAGE_CONNECTION_STRING", "AZURE_STORAGE_CONNECTION_STRING"
+        ),
+    )
+    azure_log_container: str = "call-data"
+    # agent_id -> blob prefix inside the container. Lombardia was the first deployment
+    # and writes to the container root, so its prefix is deliberately empty; an agent
+    # that isn't listed falls back to "<agent_id lowercased>/".
+    azure_log_prefixes: dict[str, str] = {
+        "Lazio": "lazio/",
+        "Piemonte": "piemonte/",
+        "Trentino": "trentino/",
+        "Lombardia": "",
+    }
+    # How often the worker looks for calls whose log blob hasn't been located yet.
+    azure_log_sync_interval_seconds: float = 300.0
+    # How far back that pass looks. Past this window the blob is never going to appear
+    # — the agent uploads once with no retry and deletes un-uploaded leftovers after
+    # 7 days — so retrying forever would just burn list calls for nothing.
+    # scripts/sync_azure_logs.py --recheck ignores this for a manual sweep.
+    azure_log_lookback_days: int = 2
+
     # SMTP settings for the email alert channel (CALLHARNESS_SMTP_*).
     # Leave smtp_host unset to disable email delivery.
     smtp_host: str | None = None

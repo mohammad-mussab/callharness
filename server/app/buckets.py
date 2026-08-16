@@ -173,7 +173,14 @@ DEFAULT_BUCKETS: list[dict[str, str]] = [
             "question. This is OUR failure to hear, not the caller giving up and not a "
             "missing record: ranked above record_missing precisely because a mis-heard "
             "query returns nothing and would otherwise be reported to the customer as "
-            "data they need to add"
+            "data they need to add. The clearest signal is the ASSISTANT ITSELF being "
+            "confused: it asks the caller to repeat, rephrase or specify TWO OR MORE "
+            "times, or says outright that it did not understand. Once that has "
+            "happened, an empty lookup afterwards is a CONSEQUENCE of the mis-hearing "
+            "and not evidence the record is absent — a garbled question always comes "
+            "back with nothing. Choose this bucket even when the call ends in an empty "
+            "result, and set unanswered_query to null, so a mis-heard phrase is never "
+            "sent to the customer as a record to add"
         ),
     },
     {

@@ -10,6 +10,7 @@ build/
 *.db
 data/
 .env
+.env*.local
 
 # Node
 node_modules/
@@ -40,3 +41,6 @@ sdk/dist/
 # Local convenience script: opens the SSH tunnel to the Lazio VM dashboard.
 # Machine-specific (uses a local key path) - not part of the project.
 open-lazio-dashboard.bat
+
+
+/credentials

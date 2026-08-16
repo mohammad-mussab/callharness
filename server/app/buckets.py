@@ -52,6 +52,32 @@ NOT_ADDRESSABLE = (NO_CALLER_AUDIO, "needs_human", "out_of_scope")
 # Descriptions are not documentation — they are the prompt. The LLM decides membership
 # by reading these, so vagueness here produces vague classification. Each one names the
 # observable evidence rather than a feeling about the call.
+#
+# Two of them carry a rule that was added after measuring 674 live Lazio calls, and both
+# are load-bearing:
+#
+#   answered / BACKED. The first version of this description only checked that the caller
+#   HEARD the answer, which is a question about delivery, not truth. A fluent, confident,
+#   false answer passed it. Five calls were found where call_graph deflected with an
+#   aggregate ("chiusure straordinarie in 5 sedi — per quale sede?", which names no
+#   branch) and the assistant then told the caller a specific branch was closed; three of
+#   those scored `answered`, and across all 674 calls exactly ONE was ever classified
+#   agent_invented_answer. On 8447a26d the assistant asserted a lab was shut on a named
+#   morning with no second tool call at all. Checking delivery without checking evidence
+#   turns a fabricated closure into a reported success.
+#
+#   record_missing / FINISHED CHAIN. A routing instruction is not a report of absent data.
+#   "Non ho una risposta per questo cerca nel RAG" tells the agent to ask the other tool.
+#   Of 70 calls containing it: 22 were then answered by the RAG (not a gap at all), 11
+#   came back empty from both (a real gap), and in 37 the agent never made the follow-up
+#   call (our bug). 45 of the 135 record_missing calls — a third of the list emailed to
+#   the customer as records they must add — came from the first and third groups.
+#
+# Note what is NOT here: lab-test prices. Those correctly go to knowledge_base_new (lab
+# work is not bookable through the slot API, so there are no slots to read a price from —
+# only poliambulatorio/diagnostica prices live there, and sports medicine has its own
+# endpoint). 36 of 54 price questions were correctly routed and genuinely had no price in
+# the KB. That is a real content gap and must keep reaching the customer.
 DEFAULT_BUCKETS: list[dict[str, str]] = [
     {
         "key": "answered",
@@ -60,14 +86,20 @@ DEFAULT_BUCKETS: list[dict[str, str]] = [
             "round trip: a tool returned a question or asked for more detail, the "
             "assistant relayed it, the caller supplied the detail, and a later tool call "
             "containing that detail returned real data. That is correct behaviour, not a "
-            "fault. BEFORE choosing this, confirm the caller actually HEARD the answer: "
-            "find the assistant turn that states it. If the only assistant turn after "
-            'the relevant tool result breaks off as a fragment — "Il", "Per gli esami '
-            'del" — and no earlier assistant turn stated the answer in full, then the '
-            "tool succeeded but the caller received nothing; that is "
+            "fault. TWO checks before choosing this, and both must pass. (1) HEARD: "
+            "find the assistant turn that states the answer. If the only assistant turn "
+            'after the relevant tool result breaks off as a fragment — "Il", "Per gli '
+            'esami del" — and no earlier assistant turn stated the answer in full, then '
+            "the tool succeeded but the caller received nothing; that is "
             '"caller_abandoned", not this. A fragment is fine when the full answer was '
             "already delivered earlier and what got cut was a follow-up offer or a "
-            "goodbye"
+            "goodbye. (2) BACKED: the specific fact the assistant stated — an opening "
+            "hour, a closure, a price, an address, availability — must actually appear "
+            "in one of the tool results above it. A confident, fluent answer is not the "
+            "same as a true one. The commonest failure is an AGGREGATE: a tool replying "
+            '"ci sono chiusure straordinarie in 5 sedi della regione. Per quale sede?" '
+            "has named NO branch, so an assistant that then says a particular branch is "
+            'closed made that up — that is "agent_invented_answer", not this'
         ),
     },
     {
@@ -143,7 +175,14 @@ DEFAULT_BUCKETS: list[dict[str, str]] = [
             "the assistant then handed the caller to a human or ended the call because it "
             "had nothing — an empty lookup is WHY the call failed, and being transferred "
             "is merely HOW it ended. Do NOT use this when a later tool call went on to "
-            "answer the same question"
+            "answer the same question. A lookup only counts as finished when the chain "
+            "it started has finished. A tool that replies with a ROUTING INSTRUCTION has "
+            'not reported absent data: "Non ho una risposta per questo cerca nel RAG" '
+            "tells the agent to ask the other tool, it does not say the record is "
+            "missing. So: if the agent then called that other tool and it answered, the "
+            "question was answered and this is NOT the bucket; if it called it and that "
+            "came back empty too, this IS the bucket; if it never made the follow-up "
+            'call at all, nothing was ever looked up — use "other"'
         ),
     },
     {
@@ -184,7 +223,12 @@ DEFAULT_BUCKETS: list[dict[str, str]] = [
         "key": FALLBACK_BUCKET,
         "description": (
             "genuinely none of the above. Expected and fine — describe what happened in "
-            "issue_note so recurring cases can be promoted to their own bucket"
+            "issue_note so recurring cases can be promoted to their own bucket. One "
+            "specific case belongs here: a tool deferred to another tool (e.g. "
+            '"cerca nel RAG") and the agent never made that follow-up call. Say exactly '
+            "that in issue_note — name the tool that deferred and the call that was "
+            "never made — because it is our bug, not absent data, and it must not reach "
+            "the customer as a record they are asked to add"
         ),
     },
 ]

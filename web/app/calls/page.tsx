@@ -8,11 +8,9 @@ import { formatDate, formatDuration } from "@/lib/format";
 import { label } from "@/lib/labels";
 import {
   BucketBadge,
-  NonCompletionReasonBadge,
   OutcomeBadge,
   SentimentBadge,
   StatusBadge,
-  TransferReasonBadge,
 } from "@/components/Badges";
 
 const PAGE_SIZE = 25;
@@ -140,7 +138,6 @@ export default function CallsPage() {
               <th className="px-4 py-2.5">Outcome</th>
               <th className="px-4 py-2.5">What happened</th>
               <th className="px-4 py-2.5">Sentiment</th>
-              <th className="px-4 py-2.5">End reason</th>
               <th className="px-4 py-2.5">Summary</th>
             </tr>
           </thead>
@@ -172,22 +169,6 @@ export default function CallsPage() {
                 </td>
                 <td className="whitespace-nowrap px-4 py-2.5">
                   <SentimentBadge label={call.sentiment_label} />
-                </td>
-                <td className="whitespace-nowrap px-4 py-2.5">
-                  <div className="flex flex-wrap items-center gap-1">
-                    <TransferReasonBadge reason={call.transfer_reason} source={call.reason_source} />
-                    <NonCompletionReasonBadge
-                      reason={call.non_completion_reason}
-                      source={call.reason_source}
-                    />
-                    {/* One placeholder for the whole cell, so the column never looks
-                        broken on a call with no reason at all — but never a dash
-                        sitting in front of a badge that is present. */}
-                    {!call.transfer_reason &&
-                      !call.non_completion_reason && (
-                        <span className="text-xs text-zinc-500">—</span>
-                      )}
-                  </div>
                 </td>
                 <td className="max-w-md truncate px-4 py-2.5 text-zinc-400">
                   {call.summary ?? <span className="text-zinc-600">No summary</span>}

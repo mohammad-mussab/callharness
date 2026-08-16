@@ -60,7 +60,14 @@ DEFAULT_BUCKETS: list[dict[str, str]] = [
             "round trip: a tool returned a question or asked for more detail, the "
             "assistant relayed it, the caller supplied the detail, and a later tool call "
             "containing that detail returned real data. That is correct behaviour, not a "
-            "fault"
+            "fault. BEFORE choosing this, confirm the caller actually HEARD the answer: "
+            "find the assistant turn that states it. If the only assistant turn after "
+            'the relevant tool result breaks off as a fragment — "Il", "Per gli esami '
+            'del" — and no earlier assistant turn stated the answer in full, then the '
+            "tool succeeded but the caller received nothing; that is "
+            '"caller_abandoned", not this. A fragment is fine when the full answer was '
+            "already delivered earlier and what got cut was a follow-up offer or a "
+            "goodbye"
         ),
     },
     {
@@ -100,8 +107,31 @@ DEFAULT_BUCKETS: list[dict[str, str]] = [
     {
         "key": "caller_abandoned",
         "description": (
-            "the assistant asked a reasonable clarifying question and the caller never "
-            "answered it — they hung up or went silent instead of supplying the detail"
+            "the caller left before the exchange finished. Either (a) the assistant "
+            "asked a reasonable clarifying question and they never answered it, or "
+            "(b) they hung up while the answer was still being delivered — the last "
+            "assistant turn breaks off mid-sentence or mid-word and the substantive "
+            "answer had NOT yet reached them. The transcript contains only what the "
+            "caller actually heard, so a truncated final turn is evidence, not a "
+            "glitch. IMPORTANT: a tool returning the right data is not the same as the "
+            'caller receiving it — do not score such a call "answered" on the strength '
+            "of the tool result alone. The exception is a call where the substantive "
+            "answer had already landed and only a closing pleasantry was cut off; that "
+            'is "answered"'
+        ),
+    },
+    {
+        "key": "not_understood",
+        "description": (
+            "the assistant could not make out what the caller was asking, because "
+            "speech-to-text mangled it or the caller's words arrived as fragments — "
+            "invented-sounding service names, half-words, a branch name that is not a "
+            "real branch. The give-away is the assistant asking for clarification "
+            "repeatedly, or a tool being queried with something that is not a coherent "
+            "question. This is OUR failure to hear, not the caller giving up and not a "
+            "missing record: ranked above record_missing precisely because a mis-heard "
+            "query returns nothing and would otherwise be reported to the customer as "
+            "data they need to add"
         ),
     },
     {
@@ -173,9 +203,15 @@ DEFAULT_BUCKETS: list[dict[str, str]] = [
 #   - partial_answered sits below every fault bucket. If part of a multi-question call
 #     hit a missing record, "missing record" is the actionable label; "partly answered"
 #     tells the customer nothing they can act on.
+#   - not_understood outranks record_missing. A mis-heard question ("informazioni sul
+#     centro di Pietra", where the caller meant Torre in Pietra) reaches the lookup as
+#     nonsense and comes back empty, so it looks exactly like absent data. Below
+#     record_missing it would put a question no customer can answer onto the list of
+#     records they are asked to add. Observed on a real call.
 BUCKET_PRECEDENCE: tuple[str, ...] = (
     "agent_invented_answer",
     "tool_kept_asking",
+    "not_understood",
     "record_missing",
     "lookup_error",
     "caller_abandoned",

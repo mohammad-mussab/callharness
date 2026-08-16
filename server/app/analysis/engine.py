@@ -109,12 +109,24 @@ def _format_tool_call(tc: dict) -> str:
 
 
 def build_transcript(call: Call) -> str:
+    """Turns in order, with each turn's tool calls rendered BEFORE its text.
+
+    The ordering is not cosmetic. A tool call is stashed against the *next* assistant
+    turn (see the SDK's record_tool_call) because the lookup happens while that turn is
+    still being produced — the tool always runs first, then the assistant speaks. This
+    used to render the tool call after the turn text, which inverted that on every call
+    and made the tool result look like the last thing the caller received. It is why a
+    call whose assistant turn was cut to the single word "Il" scored `answered`: the
+    transcript ended with a complete answer sitting under a one-word turn, so the judge
+    read the answer as delivered. Rendering the tool call first puts the truncated
+    speech last, where it actually belongs.
+    """
     lines = []
     for t in call.turns:
         speaker = "User" if t.role == "user" else "Assistant"
-        lines.append(f"{speaker}: {t.text}")
         for tc in t.tool_calls or []:
             lines.append(_format_tool_call(tc))
+        lines.append(f"{speaker}: {t.text}")
     return "\n".join(lines)
 
 
@@ -231,7 +243,12 @@ def build_user_prompt(call: Call, config: AnalysisConfig) -> str:
             '- "unanswered_query" (string or null): ONLY when bucket is '
             '"record_missing" — the question that came back with nothing, worded as it '
             "was sent to the tool (use the tool call's query argument where there is "
-            "one). Use null for every other bucket."
+            "one). This line is sent to the customer as a record they should add, so it "
+            "must be a coherent question a person could actually act on. If the query "
+            "was built from mis-heard or fragmentary speech — a branch name that is not "
+            "a real branch, a garbled service name — use null and say so in issue_note "
+            'instead (and prefer the "not_understood" bucket). Use null for every other '
+            "bucket."
         )
         schema["bucket"] = "string"
         schema["issue_note"] = "string"

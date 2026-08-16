@@ -110,9 +110,6 @@ export default function DashboardPage() {
             <ReasonBars data={overview.bucket_breakdown} />
           </Panel>
         )}
-        <Panel title="End reasons">
-          {overview ? <ReasonBars data={overview.end_reason_breakdown} /> : null}
-        </Panel>
         {overview && (overview.transfer_reason_breakdown?.length ?? 0) > 0 && (
           <Panel title="Why calls get transferred">
             <ReasonBars data={overview.transfer_reason_breakdown} />

@@ -43,7 +43,6 @@ export type Call = {
   started_at: string;
   ended_at: string | null;
   duration_seconds: number | null;
-  end_reason: string | null;
   transferred: boolean;
   recording_url: string | null;
   has_recording: boolean;
@@ -100,7 +99,6 @@ export type Overview = {
   avg_sentiment_score: number | null;
   sentiment_distribution: Record<string, number>;
   outcome_distribution: Record<string, number>;
-  end_reason_breakdown: { reason: string; count: number }[];
   bucket_breakdown: { reason: string; count: number }[];
   raw_answer_rate: number | null;
   addressable_answer_rate: number | null;

@@ -1,7 +1,11 @@
+import logging
+
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
 from .config import settings
+
+logger = logging.getLogger("callharness.db")
 
 
 class Base(DeclarativeBase):
@@ -45,9 +49,48 @@ COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
     ("analysis_config", "bucketing_enabled", "BOOLEAN DEFAULT TRUE"),
 ]
 
+# Columns to remove from existing databases. Separate from COLUMN_MIGRATIONS because
+# this direction is destructive and irreversible — there is no Alembic here to roll
+# back, so a column only belongs on this list once it is established that nothing
+# unique is stored in it.
+#
+# calls.end_reason qualifies. Across 674 live Lazio calls it held only NULL (397) or
+# "transferred" (277), agreed with the `transferred` boolean on every single row, and
+# never once carried the "completed" value that outcome.compute_outcome() was checking
+# for — so it duplicated a column we already have and changed no outcome, chart or
+# filter. Contrast transfer_reason / non_completion_reason, which are FROZEN rather
+# than dropped precisely because they do hold history nothing else has.
+#
+# DROP COLUMN needs SQLite 3.35+ (2021) and any supported Postgres. Wrapped so an
+# older SQLite in a dev environment logs and carries on instead of failing startup.
+COLUMN_DROPS: list[tuple[str, str]] = [
+    ("calls", "end_reason"),
+]
+
 
 async def _apply_column_migrations(conn) -> None:
     dialect = engine.dialect.name
+
+    async def _columns(table: str) -> set[str]:
+        if dialect == "sqlite":
+            rows = (await conn.exec_driver_sql(f"PRAGMA table_info({table})")).fetchall()
+            return {r[1] for r in rows}
+        rows = (
+            await conn.exec_driver_sql(
+                f"SELECT column_name FROM information_schema.columns WHERE table_name = '{table}'"
+            )
+        ).fetchall()
+        return {r[0] for r in rows}
+
+    for table, column in COLUMN_DROPS:
+        existing = await _columns(table)
+        if existing and column in existing:
+            try:
+                await conn.exec_driver_sql(f"ALTER TABLE {table} DROP COLUMN {column}")
+                logger.info("Dropped column %s.%s", table, column)
+            except Exception as exc:  # noqa: BLE001 - never block startup on this
+                logger.warning("Could not drop %s.%s: %s", table, column, exc)
+
     for table, column, ddl in COLUMN_MIGRATIONS:
         if dialect == "sqlite":
             rows = (await conn.exec_driver_sql(f"PRAGMA table_info({table})")).fetchall()

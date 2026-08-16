@@ -36,7 +36,6 @@ class CallCreate(BaseModel):
     started_at: datetime | None = None
     ended_at: datetime | None = None
     duration_seconds: float | None = None
-    end_reason: str | None = None
     transferred: bool = False
     recording_url: str | None = None
     metadata: dict[str, Any] | None = None
@@ -77,7 +76,6 @@ class CallOut(BaseModel):
     started_at: datetime
     ended_at: datetime | None
     duration_seconds: float | None
-    end_reason: str | None
     transferred: bool
     recording_url: str | None
     has_recording: bool = False
@@ -121,7 +119,7 @@ class CallOut(BaseModel):
     def outcome(self) -> str:
         """One of "transferred" | "completed" | "non_completed" — see outcome.py
         for the precedence. Derived, not stored."""
-        return compute_outcome(self.success, self.transferred, self.end_reason)
+        return compute_outcome(self.success, self.transferred)
 
 
 class EvaluationResultOut(BaseModel):
@@ -210,7 +208,6 @@ class OverviewOut(BaseModel):
     avg_sentiment_score: float | None
     sentiment_distribution: dict[str, int]
     outcome_distribution: dict[str, int] = Field(default_factory=dict)
-    end_reason_breakdown: list[dict[str, Any]]
     # What happened, across every analysed call — [{reason: key, count: n}, ...].
     bucket_breakdown: list[dict[str, Any]] = Field(default_factory=list)
     # answered / every bucketed call.

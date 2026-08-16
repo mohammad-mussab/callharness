@@ -126,7 +126,7 @@ async def knowledge_gaps(
         if not gaps:
             continue
         calls_with_gaps += 1
-        outcome = compute_outcome(call.success, call.transferred, call.end_reason)
+        outcome = compute_outcome(call.success, call.transferred)
         # One call asking the same thing twice counts once, so the number reflects how
         # many callers wanted it rather than how chatty the agent was.
         seen_here: set[str] = set()
@@ -223,7 +223,7 @@ async def disputes(
     }
 
     for call in rows:
-        oc_outcome = compute_outcome(call.success, call.transferred, call.end_reason)
+        oc_outcome = compute_outcome(call.success, call.transferred)
         oc_reason = call.transfer_reason or call.non_completion_reason
         verdict = classify(
             meta=call.meta,
@@ -312,7 +312,6 @@ async def overview(
         Call.sentiment_label,
         Call.sentiment_score,
         Call.transferred,
-        Call.end_reason,
         Call.bucket,
         Call.transfer_reason,
         Call.non_completion_reason,
@@ -336,15 +335,8 @@ async def overview(
 
     outcome_dist = {"transferred": 0, "completed": 0, "non_completed": 0}
     for r in rows:
-        outcome_dist[compute_outcome(r.success, r.transferred, r.end_reason)] += 1
+        outcome_dist[compute_outcome(r.success, r.transferred)] += 1
 
-    reasons: dict[str, int] = defaultdict(int)
-    for r in rows:
-        reasons[r.end_reason or "unknown"] += 1
-    reason_breakdown = sorted(
-        ({"reason": k, "count": v} for k, v in reasons.items()),
-        key=lambda x: -x["count"],
-    )
 
     def _breakdown(values: list[str | None]) -> list[dict[str, Any]]:
         counts: dict[str, int] = defaultdict(int)
@@ -421,7 +413,6 @@ async def overview(
         avg_sentiment_score=(sum(sentiments) / len(sentiments) if sentiments else None),
         sentiment_distribution=sentiment_dist,
         outcome_distribution=outcome_dist,
-        end_reason_breakdown=reason_breakdown,
         bucket_breakdown=bucket_breakdown,
         raw_answer_rate=raw_rate,
         addressable_answer_rate=addressable_rate,

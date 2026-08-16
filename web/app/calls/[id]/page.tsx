@@ -7,7 +7,6 @@ import { fetcher, textFetcher, type CallDetail } from "@/lib/api";
 import { formatClock, formatDate, formatDuration, titleCase } from "@/lib/format";
 import {
   BucketBadge,
-  EndReasonBadge,
   NonCompletionReasonBadge,
   OutcomeBadge,
   SentimentBadge,
@@ -129,7 +128,6 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
             {call.analysis_status === "completed" && <OutcomeBadge outcome={call.outcome} />}
             <BucketBadge bucket={call.bucket} note={call.issue_note} />
             <SentimentBadge label={call.sentiment_label} />
-            <EndReasonBadge reason={call.end_reason} />
             <TransferReasonBadge reason={call.transfer_reason} source={call.reason_source} />
             <NonCompletionReasonBadge
               reason={call.non_completion_reason}

@@ -8,7 +8,6 @@ import { formatDate, formatDuration } from "@/lib/format";
 import { label } from "@/lib/labels";
 import {
   BucketBadge,
-  EndReasonBadge,
   NonCompletionReasonBadge,
   OutcomeBadge,
   SentimentBadge,
@@ -176,7 +175,6 @@ export default function CallsPage() {
                 </td>
                 <td className="whitespace-nowrap px-4 py-2.5">
                   <div className="flex flex-wrap items-center gap-1">
-                    <EndReasonBadge reason={call.end_reason} />
                     <TransferReasonBadge reason={call.transfer_reason} source={call.reason_source} />
                     <NonCompletionReasonBadge
                       reason={call.non_completion_reason}
@@ -185,8 +183,7 @@ export default function CallsPage() {
                     {/* One placeholder for the whole cell, so the column never looks
                         broken on a call with no reason at all — but never a dash
                         sitting in front of a badge that is present. */}
-                    {!call.end_reason &&
-                      !call.transfer_reason &&
+                    {!call.transfer_reason &&
                       !call.non_completion_reason && (
                         <span className="text-xs text-zinc-500">—</span>
                       )}

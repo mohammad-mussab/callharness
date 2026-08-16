@@ -3,7 +3,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
-from sqlalchemy import and_, exists, func, or_, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -96,7 +96,6 @@ async def ingest_call(payload: CallCreate, session: AsyncSession = Depends(get_s
         to_number=payload.to_number,
         ended_at=ended_at,
         duration_seconds=duration,
-        end_reason=payload.end_reason,
         transferred=payload.transferred,
         recording_url=payload.recording_url,
         meta=payload.metadata,
@@ -138,7 +137,6 @@ async def list_calls(
     agent_id: str | None = None,
     success: bool | None = None,
     sentiment: str | None = None,
-    end_reason: str | None = None,
     bucket: str | None = None,
     transfer_reason: str | None = None,
     non_completion_reason: str | None = None,
@@ -157,8 +155,6 @@ async def list_calls(
         query = query.where(Call.success == success)
     if sentiment:
         query = query.where(Call.sentiment_label == sentiment)
-    if end_reason:
-        query = query.where(Call.end_reason == end_reason)
     if bucket:
         query = query.where(Call.bucket == bucket)
     if transfer_reason:
@@ -173,21 +169,13 @@ async def list_calls(
         elif outcome == "completed":
             query = query.where(
                 Call.transferred == False,  # noqa: E712
-                or_(
-                    Call.success == True,  # noqa: E712
-                    and_(Call.success.is_(None), Call.end_reason == "completed"),
-                ),
+                Call.success == True,  # noqa: E712
             )
         elif outcome == "non_completed":
+            # success False *or* NULL — an unjudged call is not a completed one.
             query = query.where(
                 Call.transferred == False,  # noqa: E712
-                or_(
-                    Call.success == False,  # noqa: E712
-                    and_(
-                        Call.success.is_(None),
-                        or_(Call.end_reason.is_(None), Call.end_reason != "completed"),
-                    ),
-                ),
+                or_(Call.success == False, Call.success.is_(None)),  # noqa: E712
             )
     if analysis_status:
         query = query.where(Call.analysis_status == analysis_status)

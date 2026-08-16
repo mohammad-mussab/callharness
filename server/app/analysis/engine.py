@@ -309,8 +309,6 @@ def build_user_prompt(call: Call, config: AnalysisConfig) -> str:
 
     transcript = build_transcript(call)
     meta = f"\nCall metadata: direction={call.direction}, agent={call.agent_id}"
-    if call.end_reason:
-        meta += f", end_reason={call.end_reason}"
     if call.duration_seconds:
         meta += f", duration={round(call.duration_seconds)}s"
 

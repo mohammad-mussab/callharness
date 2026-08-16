@@ -28,7 +28,6 @@ class Call(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime)
     duration_seconds: Mapped[float | None] = mapped_column(Float)
-    end_reason: Mapped[str | None] = mapped_column(String(64), index=True)
     transferred: Mapped[bool] = mapped_column(Boolean, default=False)
 
     recording_path: Mapped[str | None] = mapped_column(String(512))

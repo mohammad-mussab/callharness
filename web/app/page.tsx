@@ -7,9 +7,17 @@ import StatCard from "@/components/StatCard";
 import { OutcomeDonut, ReasonBars, SentimentDonut, SuccessChart, VolumeChart } from "@/components/charts";
 import { useState } from "react";
 
-function Panel({ title, children }: { title: string; children: React.ReactNode }) {
+function Panel({
+  title,
+  children,
+  className = "",
+}: {
+  title: string;
+  children: React.ReactNode;
+  className?: string;
+}) {
   return (
-    <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+    <div className={`rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 ${className}`}>
       <h2 className="mb-3 text-sm font-medium text-zinc-300">{title}</h2>
       {children}
     </div>
@@ -106,18 +114,10 @@ export default function DashboardPage() {
           {overview ? <SentimentDonut distribution={overview.sentiment_distribution} /> : null}
         </Panel>
         {overview && (overview.bucket_breakdown?.length ?? 0) > 0 && (
-          <Panel title="What happened">
+          // Full width: this is the live classification and has ~12 categories, so
+          // half a row squeezed the bars until labels dropped out.
+          <Panel title="What happened" className="lg:col-span-2">
             <ReasonBars data={overview.bucket_breakdown} />
-          </Panel>
-        )}
-        {overview && (overview.transfer_reason_breakdown?.length ?? 0) > 0 && (
-          <Panel title="Why calls get transferred">
-            <ReasonBars data={overview.transfer_reason_breakdown} />
-          </Panel>
-        )}
-        {overview && (overview.non_completion_reason_breakdown?.length ?? 0) > 0 && (
-          <Panel title="Why calls don't complete">
-            <ReasonBars data={overview.non_completion_reason_breakdown} />
           </Panel>
         )}
       </div>

@@ -170,8 +170,14 @@ export function ReasonBars({ data }: { data: { reason: string; count: number }[]
   // Axis shows the English label; the tooltip adds the stored key so a bar can be
   // matched against the operational database without a lookup table.
   const rows = data.map((d) => ({ ...d, name: label(d.reason) }));
+  // Height grows with the number of categories instead of being fixed at 220px.
+  // Recharts drops Y-axis ticks it cannot fit rather than shrinking them, so a fixed
+  // height silently hid categories once the bucket taxonomy reached 12 — the chart
+  // looked complete while showing eight of them. 34px per row keeps every label drawn;
+  // the floor stops a two-category breakdown from collapsing.
+  const height = Math.max(200, rows.length * 34 + 48);
   return (
-    <ResponsiveContainer width="100%" height={220}>
+    <ResponsiveContainer width="100%" height={height}>
       <BarChart data={rows} layout="vertical" margin={{ top: 8, right: 16, bottom: 0, left: 24 }}>
         <CartesianGrid stroke="#27272a" horizontal={false} />
         <XAxis type="number" allowDecimals={false} stroke="#52525b" fontSize={11} />
@@ -180,7 +186,10 @@ export function ReasonBars({ data }: { data: { reason: string; count: number }[]
           dataKey="name"
           stroke="#52525b"
           fontSize={11}
-          width={140}
+          // 140 truncated the longer bucket labels ("Agent invented answer",
+          // "Caller abandoned mid-call") to an ellipsis.
+          width={180}
+          interval={0}
           tick={{ fill: "#a1a1aa" }}
         />
         <Tooltip

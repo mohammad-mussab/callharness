@@ -7,11 +7,9 @@ import { fetcher, textFetcher, type CallDetail } from "@/lib/api";
 import { formatClock, formatDate, formatDuration, titleCase } from "@/lib/format";
 import {
   BucketBadge,
-  NonCompletionReasonBadge,
   OutcomeBadge,
   SentimentBadge,
   StatusBadge,
-  TransferReasonBadge,
 } from "@/components/Badges";
 import WaveformPlayer from "@/components/WaveformPlayer";
 import LogViewer from "@/components/LogViewer";
@@ -128,11 +126,6 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
             {call.analysis_status === "completed" && <OutcomeBadge outcome={call.outcome} />}
             <BucketBadge bucket={call.bucket} note={call.issue_note} />
             <SentimentBadge label={call.sentiment_label} />
-            <TransferReasonBadge reason={call.transfer_reason} source={call.reason_source} />
-            <NonCompletionReasonBadge
-              reason={call.non_completion_reason}
-              source={call.reason_source}
-            />
             {call.language && (
               <span className="inline-flex items-center rounded-full bg-sky-500/15 px-2 py-0.5 text-xs font-medium text-sky-300">
                 {titleCase(call.language)}

@@ -25,7 +25,13 @@ class Settings(BaseSettings):
     # only 3/6 at the provider default of 1.0 — and an unstable bucket moves the charts
     # while nothing has changed. Ignored by models that reject it (the gpt-5 family
     # accepts only the default); see llm.py, which strips it on a 400.
-    llm_temperature: float = 0.5
+    #
+    # 0.1 rather than 0.5 because bucketing is now a rule-following task, not a
+    # judgement one: the descriptions carry explicit procedures ("quote the tool result
+    # containing the claim", "look for a call to that tool AFTER the deferral") and
+    # sampling away from the most likely token only adds chances to skip a step. Both
+    # values measured identical on the stability test, so this costs nothing there.
+    llm_temperature: float = 0.1
     openai_api_key: str | None = Field(
         default=None,
         validation_alias=AliasChoices("CALLHARNESS_OPENAI_API_KEY", "OPENAI_API_KEY"),

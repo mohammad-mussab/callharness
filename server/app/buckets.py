@@ -200,14 +200,20 @@ DEFAULT_BUCKETS: list[dict[str, str]] = [
         "key": "lookup_error",
         "description": (
             "the lookup never completed, so we never found out whether the record "
-            "exists. Two shapes. (a) A tool failed technically — timeout, 5xx, "
-            "connection refused, exception, traceback. (b) A tool DEFERRED to another "
-            'tool and the agent never made that call: "Non ho una risposta per questo '
-            'cerca nel RAG" tells the agent to ask the knowledge base, so if no such '
-            "call follows, nothing was ever actually looked up. Either way this is OUR "
-            "failure, not the customer's data being absent — which is why it ranks "
-            "above record_missing. Filing it lower would send the customer a record to "
-            "add for a question we never asked"
+            "exists. Two shapes, and (a) is the common one. (a) A TOOL DEFERRED TO "
+            'ANOTHER TOOL AND THAT CALL WAS NEVER MADE. "Non ho una risposta per questo '
+            'cerca nel RAG" is not a result — it is call_graph telling the agent to ask '
+            "knowledge_base_new. HOW TO CHECK, do this rather than assuming: find the "
+            "[tool call: ...] line for the deferral, then look at the lines BELOW it for "
+            "a call to the tool it named. Only a call AFTER the deferral counts — the "
+            "same tool appearing EARLIER in the call was answering a different question "
+            "and does not close this chain. If you can point to a later call to that "
+            "tool, use whatever its result justifies. If there is none, the chain "
+            "stopped here and this is the bucket. (b) A tool failed technically — "
+            "timeout, 5xx, connection refused, exception, traceback. Either shape is OUR "
+            "failure rather than the customer's data being absent, which is why this "
+            "ranks above record_missing: filing it lower sends the customer a record to "
+            "add for a question that was never actually asked"
         ),
     },
     {

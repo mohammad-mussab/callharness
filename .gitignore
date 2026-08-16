@@ -30,7 +30,10 @@ sdk/making-callharness.txt
 
 
 tmp/
+# Working notes for AI coding assistants. Untracked on purpose: they describe how to
+# work on this repo, not the repo itself, and they change far more often than the code.
 Claude.md
+RULES.md
 # Build artifacts
 sdk/dist/
 

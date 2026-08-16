@@ -123,6 +123,7 @@ export default function SettingsPage() {
     // so drop them here rather than surfacing a validation error.
     const payload = {
       ...config,
+      buckets: config.buckets.filter((c) => c.key.trim()),
       transfer_reasons: config.transfer_reasons.filter((c) => c.key.trim()),
       non_completion_reasons: config.non_completion_reasons.filter((c) => c.key.trim()),
     };
@@ -195,16 +196,52 @@ export default function SettingsPage() {
       <section className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
         <div>
           <Toggle
-            label="Classify why calls transfer or don't complete"
+            label="Sort every call into a bucket"
+            checked={config.bucketing_enabled}
+            onChange={(v) => set({ bucketing_enabled: v })}
+          />
+          <p className="mt-1 text-sm text-zinc-500">
+            Every analysed call gets exactly one bucket describing what happened, plus a
+            one-sentence note about that specific call. Unlike the transfer and
+            non-completion reasons below, this applies to <em>every</em> call — including
+            successful ones, where a caller who got two of their three answers used to
+            leave no trace at all.
+          </p>
+        </div>
+        {config.bucketing_enabled && (
+          <>
+            <TaxonomyEditor
+              title="Buckets"
+              blurb="What happened on the call. The description is what the analysis reads to decide — vague descriptions produce vague classification."
+              categories={config.buckets}
+              onChange={(v) => set({ buckets: v })}
+            />
+            <p className="text-sm text-zinc-500">
+              Order matters: a call can fit several buckets and only stores one, so the
+              analysis takes the first match in the built-in severity order. Adding a
+              bucket is safe; renaming a key orphans every call already classified under
+              it. Review the <code className="text-zinc-400">other</code> bucket on the{" "}
+              <a href="/other" className="text-indigo-400 hover:underline">Other</a> page
+              and promote anything recurring.
+            </p>
+          </>
+        )}
+      </section>
+
+      <section className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+        <div>
+          <Toggle
+            label="Classify why calls transfer or don't complete (superseded by buckets)"
             checked={config.classification_enabled}
             onChange={(v) => set({ classification_enabled: v })}
           />
           <p className="mt-1 text-sm text-zinc-500">
-            Every transferred or non-completed call is sorted into one of your categories,
-            which is what the breakdown charts on the overview page are built from. Edit
-            these here — no change to your agent's code. Review the{" "}
-            <code className="text-zinc-400">other</code> bucket now and then, and promote
-            anything recurring into its own category.
+            The older two-taxonomy scheme. It only ever applied to transferred or
+            non-completed calls, so the same root cause filed under two different keys
+            depending on how the call ended. Buckets replaced it. Leaving this{" "}
+            <strong>off</strong> preserves the labels already on your calls — they stay
+            queryable and keep showing on the call pages; turning it back on makes the
+            analysis start overwriting them again.
           </p>
         </div>
         {config.classification_enabled && (

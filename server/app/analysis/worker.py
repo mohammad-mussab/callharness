@@ -12,6 +12,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import selectinload
 
 from .. import azure_logs
+from ..buckets import DEFAULT_BUCKETS
 from ..config import settings
 from ..db import SessionLocal
 from ..models import AnalysisConfig, Call, utcnow
@@ -40,6 +41,9 @@ async def get_or_create_config(session) -> AnalysisConfig:
         changed = True
     if not config.non_completion_reasons:
         config.non_completion_reasons = [dict(c) for c in DEFAULT_NON_COMPLETION_REASONS]
+        changed = True
+    if not config.buckets:
+        config.buckets = [dict(c) for c in DEFAULT_BUCKETS]
         changed = True
     if changed:
         await session.commit()

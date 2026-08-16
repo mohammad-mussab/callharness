@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from ..buckets import ANSWERED_BUCKET, NOT_ADDRESSABLE
 from ..db import get_session
 from ..disputes import (
     AGREED,
@@ -23,6 +24,7 @@ from ..knowledge_gaps import cluster_questions, extract_gaps
 from ..models import Call, Turn, utcnow
 from ..outcome import compute_outcome
 from ..schemas import (
+    BucketsOut,
     DisputedCallOut,
     DisputesOut,
     GapExampleOut,
@@ -47,6 +49,32 @@ def percentile(values: list[float], p: float) -> float | None:
 
 def _avg(values: list[float]) -> float | None:
     return round(sum(values) / len(values), 1) if values else None
+
+
+def answer_rates(buckets: list[str | None]) -> tuple[float | None, float | None]:
+    """(raw, addressable) share of calls where the caller got what they asked for.
+
+    Unbucketed calls (not analysed yet, or analysis disabled) are excluded from both
+    denominators — counting them would make the rate a measure of how much analysis has
+    run rather than of how the agent performed.
+
+    The two differ only in the denominator. `addressable` drops the calls no amount of
+    data or agent work could have rescued — a request that genuinely needs a person, one
+    outside the agent's remit, and a call with no caller on it — so it answers "of the
+    calls we could have won, how many did we". `partial_answered` stays in both
+    denominators and out of both numerators: a caller who got two of three answers did
+    not get what they asked for.
+    """
+    bucketed = [b for b in buckets if b]
+    if not bucketed:
+        return None, None
+    answered = sum(1 for b in bucketed if b == ANSWERED_BUCKET)
+    addressable = [b for b in bucketed if b not in NOT_ADDRESSABLE]
+    return (
+        round(answered / len(bucketed), 4),
+        round(answered / len(addressable), 4) if addressable else None,
+    )
+
 
 router = APIRouter(prefix="/api/v1/analytics", tags=["analytics"])
 
@@ -285,6 +313,7 @@ async def overview(
         Call.sentiment_score,
         Call.transferred,
         Call.end_reason,
+        Call.bucket,
         Call.transfer_reason,
         Call.non_completion_reason,
         Call.analysis_status,
@@ -325,6 +354,9 @@ async def overview(
         return sorted(
             ({"reason": k, "count": v} for k, v in counts.items()), key=lambda x: -x["count"]
         )
+
+    bucket_breakdown = _breakdown([r.bucket for r in rows])
+    raw_rate, addressable_rate = answer_rates([r.bucket for r in rows])
 
     transfer_reason_breakdown = _breakdown([r.transfer_reason for r in rows])
     non_completion_reason_breakdown = _breakdown([r.non_completion_reason for r in rows])
@@ -390,9 +422,69 @@ async def overview(
         sentiment_distribution=sentiment_dist,
         outcome_distribution=outcome_dist,
         end_reason_breakdown=reason_breakdown,
+        bucket_breakdown=bucket_breakdown,
+        raw_answer_rate=raw_rate,
+        addressable_answer_rate=addressable_rate,
         transfer_reason_breakdown=transfer_reason_breakdown,
         non_completion_reason_breakdown=non_completion_reason_breakdown,
         agents=list(agents),
+        agent_stats=agent_stats,
+    )
+
+
+@router.get("/buckets", response_model=BucketsOut)
+async def buckets(
+    session: AsyncSession = Depends(get_session),
+    agent_id: str | None = None,
+    date_from: datetime | None = Query(default=None, alias="from"),
+    date_to: datetime | None = Query(default=None, alias="to"),
+):
+    """What happened across every analysed call, plus the two answer rates.
+
+    Split per agent as well as overall, because the regions run the same agent against
+    different data — a bucket that dominates in one region and not another is a data
+    problem, while one that dominates everywhere is an agent problem, and the split is
+    what tells them apart.
+    """
+    query = select(Call.agent_id, Call.bucket)
+    if agent_id:
+        query = query.where(Call.agent_id == agent_id)
+    query = _range_filter(query, date_from, date_to)
+    rows = (await session.execute(query)).all()
+
+    counts: dict[str, int] = defaultdict(int)
+    for r in rows:
+        if r.bucket:
+            counts[r.bucket] += 1
+    distribution = sorted(
+        ({"bucket": k, "count": v} for k, v in counts.items()), key=lambda x: -x["count"]
+    )
+
+    raw_rate, addressable_rate = answer_rates([r.bucket for r in rows])
+
+    by_agent: dict[str, list[str | None]] = defaultdict(list)
+    for r in rows:
+        by_agent[r.agent_id].append(r.bucket)
+    agent_stats = []
+    for name in sorted(by_agent):
+        agent_buckets = by_agent[name]
+        a_raw, a_addressable = answer_rates(agent_buckets)
+        agent_stats.append(
+            {
+                "agent_id": name,
+                "calls": len(agent_buckets),
+                "bucketed": sum(1 for b in agent_buckets if b),
+                "raw_answer_rate": a_raw,
+                "addressable_answer_rate": a_addressable,
+            }
+        )
+
+    return BucketsOut(
+        total_calls=len(rows),
+        bucketed_calls=sum(1 for r in rows if r.bucket),
+        distribution=distribution,
+        raw_answer_rate=raw_rate,
+        addressable_answer_rate=addressable_rate,
         agent_stats=agent_stats,
     )
 

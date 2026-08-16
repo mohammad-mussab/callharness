@@ -83,6 +83,47 @@ export function OutcomeBadge({ outcome }: { outcome: string | null }) {
   );
 }
 
+// What happened on the call, as opposed to how it ended (that is OutcomeBadge).
+// Coloured by kind rather than per key, so the table reads at a glance: green when
+// the caller was served, red when we got something wrong, amber when the data or the
+// infrastructure let us down, and neutral for the calls nobody could have won.
+const BUCKET_STYLES: Record<string, string> = {
+  answered: "bg-emerald-500/15 text-emerald-400",
+  partial_answered: "bg-lime-500/15 text-lime-300",
+  agent_invented_answer: "bg-red-500/20 text-red-300",
+  tool_kept_asking: "bg-red-500/15 text-red-400",
+  caller_abandoned: "bg-orange-500/15 text-orange-300",
+  record_missing: "bg-amber-500/15 text-amber-300",
+  lookup_error: "bg-amber-500/20 text-amber-200",
+  needs_human: "bg-sky-500/15 text-sky-300",
+  out_of_scope: "bg-zinc-500/15 text-zinc-300",
+  no_caller_audio: "bg-zinc-700/40 text-zinc-400",
+  other: "bg-zinc-700/40 text-zinc-300",
+};
+
+// Renders nothing when unset, like the reason badges — a call that hasn't been
+// analysed yet shouldn't show a placeholder in every row.
+export function BucketBadge({
+  bucket,
+  note = null,
+}: {
+  bucket: string | null;
+  note?: string | null;
+}) {
+  if (!bucket) return null;
+  // Hover carries the stored key (for matching against the database) and the
+  // call-specific note, which is where everything the key can't say lives.
+  const title = note ? `${labelWithKey(bucket)} — ${note}` : labelWithKey(bucket);
+  return (
+    <span
+      className={`${badgeBase} ${BUCKET_STYLES[bucket] ?? "bg-zinc-700/40 text-zinc-300"}`}
+      title={title}
+    >
+      {label(bucket)}
+    </span>
+  );
+}
+
 // Shown alongside OutcomeBadge (which already says "Transferred"/"Non-completed"),
 // so these only need to add the *reason*, not repeat the outcome itself.
 // `source` says who decided: the agent sent it with the call, or CallHarness's

@@ -6,6 +6,7 @@ import useSWR from "swr";
 import { fetcher, textFetcher, type CallDetail } from "@/lib/api";
 import { formatClock, formatDate, formatDuration, titleCase } from "@/lib/format";
 import {
+  BucketBadge,
   EndReasonBadge,
   NonCompletionReasonBadge,
   OutcomeBadge,
@@ -126,6 +127,7 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <StatusBadge status={call.analysis_status} />
             {call.analysis_status === "completed" && <OutcomeBadge outcome={call.outcome} />}
+            <BucketBadge bucket={call.bucket} note={call.issue_note} />
             <SentimentBadge label={call.sentiment_label} />
             <EndReasonBadge reason={call.end_reason} />
             <TransferReasonBadge reason={call.transfer_reason} source={call.reason_source} />
@@ -234,6 +236,27 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
           {call.summary && (
             <Panel title="Summary">
               <p className="text-sm leading-relaxed text-zinc-300">{call.summary}</p>
+            </Panel>
+          )}
+          {call.issue_note && (
+            <Panel title="What happened">
+              <div className="space-y-2">
+                <BucketBadge bucket={call.bucket} />
+                <p className="text-sm leading-relaxed text-zinc-300">{call.issue_note}</p>
+                {call.unanswered_query && (
+                  // The exact wording the lookup was given. Shown verbatim because this
+                  // is the line that reaches the customer's Missing Information report,
+                  // and it is what gets re-run against the API to verify the gap.
+                  <div className="rounded-lg border border-amber-900/60 bg-amber-950/20 p-2">
+                    <div className="text-xs uppercase tracking-wide text-amber-500/80">
+                      Query that found nothing
+                    </div>
+                    <p className="mt-0.5 font-mono text-xs text-amber-200">
+                      {call.unanswered_query}
+                    </p>
+                  </div>
+                )}
+              </div>
             </Panel>
           )}
           {call.success_rationale && (

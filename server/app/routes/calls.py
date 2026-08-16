@@ -139,6 +139,7 @@ async def list_calls(
     success: bool | None = None,
     sentiment: str | None = None,
     end_reason: str | None = None,
+    bucket: str | None = None,
     transfer_reason: str | None = None,
     non_completion_reason: str | None = None,
     outcome: str | None = None,
@@ -158,6 +159,8 @@ async def list_calls(
         query = query.where(Call.sentiment_label == sentiment)
     if end_reason:
         query = query.where(Call.end_reason == end_reason)
+    if bucket:
+        query = query.where(Call.bucket == bucket)
     if transfer_reason:
         query = query.where(Call.transfer_reason == transfer_reason)
     if non_completion_reason:

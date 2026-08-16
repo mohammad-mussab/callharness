@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     llm_provider: str = "auto"
     llm_model: str | None = None
     llm_base_url: str = "https://api.openai.com/v1"
+    # Sampling temperature for analysis. Classification wants determinism: measured over
+    # 3 runs of 6 real calls, gpt-4.1 returned identical buckets at both 0.1 and 0.5, but
+    # only 3/6 at the provider default of 1.0 — and an unstable bucket moves the charts
+    # while nothing has changed. Ignored by models that reject it (the gpt-5 family
+    # accepts only the default); see llm.py, which strips it on a 400.
+    llm_temperature: float = 0.5
     openai_api_key: str | None = Field(
         default=None,
         validation_alias=AliasChoices("CALLHARNESS_OPENAI_API_KEY", "OPENAI_API_KEY"),
@@ -93,11 +99,28 @@ class Settings(BaseSettings):
 
     @property
     def resolved_model(self) -> str:
+        # Bucket classification (buckets.py) needs two things a cheap model cannot give:
+        # multi-hop reasoning over the tool-call sequence, and a stable answer. Measured
+        # over 3 runs of 6 real Lazio calls:
+        #
+        #   gpt-4o-mini @0.1   stable, but returned `record_missing` for everything —
+        #                      consistently wrong is not useful
+        #   gpt-5-mini         50% stable. It rejects any temperature but the default,
+        #                      so it necessarily runs at 1.0 and the same call lands in
+        #                      a different bucket on re-analysis
+        #   gpt-4.1 @1.0       50% stable
+        #   gpt-4.1 @0.1/@0.5  100% stable, identical answers at both temperatures, and
+        #                      the answers match what the raw Azure logs show happened
+        #
+        # Cost on the full production prompt: 2,519 in / 240 out = $0.0070 per call, so
+        # ~$209/month at 1,000 calls/day and $4.63 to re-analyse the current 665. That is
+        # cheaper than majority-voting a weaker model, which is the usual fix for an
+        # unstable classifier and would still not reach 100%.
         if self.llm_model:
             return self.llm_model
         if self.resolved_provider == "anthropic":
             return "claude-haiku-4-5-20251001"
-        return "gpt-4o-mini"
+        return "gpt-4.1"
 
     @property
     def recordings_dir(self) -> Path:

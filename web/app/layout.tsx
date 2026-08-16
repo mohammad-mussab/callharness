@@ -11,6 +11,9 @@ const nav = [
   { href: "/", label: "Dashboard" },
   { href: "/calls", label: "Calls" },
   { href: "/gaps", label: "Missing Information" },
+  // Review queue for calls the analysis couldn't place — sits next to Calls because
+  // it is a slice of them, and it is where new buckets come from.
+  { href: "/other", label: "Other" },
   { href: "/disputes", label: "Disputed Calls" },
   { href: "/latency", label: "Latency & Quality" },
   { href: "/alerts", label: "Alerts" },

@@ -18,6 +18,18 @@
  */
 
 const LABELS: Record<string, string> = {
+  // Buckets — what actually happened on the call (server/app/buckets.py)
+  answered: "Answered",
+  partial_answered: "Partly answered",
+  agent_invented_answer: "Invented an answer",
+  tool_kept_asking: "Tool kept asking",
+  caller_abandoned: "Caller abandoned",
+  record_missing: "Record missing",
+  lookup_error: "Lookup error",
+  needs_human: "Needs a human",
+  out_of_scope: "Out of scope",
+  no_caller_audio: "No caller audio",
+
   // Transfer reasons — Italian keys mirror the agent's `motivazione` column
   mancata_comprensione: "Not understood",
   argomento_sconosciuto: "Unknown topic",

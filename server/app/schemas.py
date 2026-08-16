@@ -100,6 +100,11 @@ class CallOut(BaseModel):
     success_score: float | None
     success_rationale: str | None
     structured_data: dict[str, Any] | None
+    # What happened on this call — one key from the configured taxonomy (buckets.py).
+    bucket: str | None = None
+    issue_note: str | None = None
+    unanswered_query: str | None = None
+    # Superseded by `bucket`, kept so historical values stay visible and queryable.
     transfer_reason: str | None = None
     non_completion_reason: str | None = None
     reason_source: str | None = None  # "agent" | "llm" | null
@@ -179,6 +184,12 @@ class AnalysisConfigIn(BaseModel):
     output_language: str = "english"
     extraction_enabled: bool = True
     extraction_fields: list[ExtractionField] = Field(default_factory=list)
+    # The single call-classification taxonomy. ReasonCategory is reused verbatim: same
+    # {key, description} shape, same normalization and 32-char cap as the columns.
+    bucketing_enabled: bool = True
+    buckets: list[ReasonCategory] = Field(default_factory=list)
+    # Superseded by `buckets`. Left on the schema so an install that still has it on
+    # keeps round-tripping its saved taxonomy instead of silently resetting it.
     classification_enabled: bool = True
     transfer_reasons: list[ReasonCategory] = Field(default_factory=list)
     non_completion_reasons: list[ReasonCategory] = Field(default_factory=list)
@@ -200,10 +211,30 @@ class OverviewOut(BaseModel):
     sentiment_distribution: dict[str, int]
     outcome_distribution: dict[str, int] = Field(default_factory=dict)
     end_reason_breakdown: list[dict[str, Any]]
+    # What happened, across every analysed call — [{reason: key, count: n}, ...].
+    bucket_breakdown: list[dict[str, Any]] = Field(default_factory=list)
+    # answered / every bucketed call.
+    raw_answer_rate: float | None = None
+    # answered / (bucketed calls − needs_human − out_of_scope − no_caller_audio):
+    # the share of calls we could actually have done something about.
+    addressable_answer_rate: float | None = None
     transfer_reason_breakdown: list[dict[str, Any]] = Field(default_factory=list)
     non_completion_reason_breakdown: list[dict[str, Any]] = Field(default_factory=list)
     agents: list[str]
     # Per-agent (per-region) comparison: {agent_id, calls, success_rate, avg_sentiment}
+    agent_stats: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class BucketsOut(BaseModel):
+    """Distribution of what happened, plus the two answer rates. See buckets.py."""
+
+    total_calls: int
+    # Calls carrying a bucket. Lower than total_calls while a backfill is in flight,
+    # and the denominator both rates are computed against.
+    bucketed_calls: int
+    distribution: list[dict[str, Any]] = Field(default_factory=list)
+    raw_answer_rate: float | None = None
+    addressable_answer_rate: float | None = None
     agent_stats: list[dict[str, Any]] = Field(default_factory=list)
 
 

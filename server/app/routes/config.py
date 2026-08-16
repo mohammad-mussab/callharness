@@ -45,6 +45,10 @@ async def update_analysis_config(
     config.output_language = (payload.output_language or "english").strip().lower()
     config.extraction_enabled = payload.extraction_enabled
     config.extraction_fields = [f.model_dump() for f in payload.extraction_fields]
+    config.bucketing_enabled = payload.bucketing_enabled
+    # Same "empty means reset to defaults" rule as the taxonomies below — see
+    # buckets.buckets_or_default. To stop bucketing, turn bucketing_enabled off.
+    config.buckets = _dedupe([c.model_dump() for c in payload.buckets])
     config.classification_enabled = payload.classification_enabled
     # Saving an empty taxonomy is treated as "reset to defaults" rather than "no
     # categories" — see taxonomy.categories_or_default. To stop classifying, turn

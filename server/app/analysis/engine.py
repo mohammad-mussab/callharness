@@ -7,6 +7,13 @@ summary, sentiment, success evaluation, and user-defined structured data.
 import json
 from typing import Any
 
+from ..buckets import (
+    FALLBACK_BUCKET,
+    NO_CALLER_AUDIO,
+    buckets_or_default,
+    has_caller_audio,
+    ordered_for_prompt,
+)
 from ..models import AnalysisConfig, Call
 from ..taxonomy import (
     DEFAULT_NON_COMPLETION_REASONS,
@@ -36,6 +43,19 @@ def classification_enabled(config: AnalysisConfig) -> bool:
     return config.classification_enabled is not False
 
 
+def bucketing_enabled(config: AnalysisConfig) -> bool:
+    """Whether the LLM should sort this call into a bucket.
+
+    NULL reads as enabled, for the same reason classification_enabled does: rows that
+    predate the column must not silently lose the feature.
+    """
+    return config.bucketing_enabled is not False
+
+
+def bucket_categories(config: AnalysisConfig) -> list[dict[str, str]]:
+    return buckets_or_default(config.buckets)
+
+
 def transfer_categories(config: AnalysisConfig) -> list[dict[str, str]]:
     return categories_or_default(config.transfer_reasons, DEFAULT_TRANSFER_REASONS)
 
@@ -59,10 +79,30 @@ def _resolve_key(value: Any, categories: list[dict[str, str]]) -> str:
     return FALLBACK_KEY if FALLBACK_KEY in valid else next(iter(valid))
 
 
+# How much of a tool call reaches the judge. The result limit was 200 characters, which
+# cut 43% of real production results off mid-sentence — and it cut the load-bearing part
+# every time, because a long result is long precisely when it carries the full weekly
+# hours and the "CHIUSURE PROSSIMI GIORNI" (upcoming closures) block. The judge then read
+# the assistant quoting closure dates with no tool evidence behind them and scored a
+# correct answer as an invented one.
+#
+# 2000 clears the largest result seen in production (1,085 chars) with room to spare.
+# There is deliberately NO cap on the per-call total: a call with many tool calls is
+# usually a lookup loop or a caller with several questions — exactly the calls whose
+# evidence must not be trimmed. The realistic worst case is ~8.6k chars (~2.9k tokens),
+# which is not a prompt size worth defending against.
+_ARGS_CHAR_LIMIT = 500
+_RESULT_CHAR_LIMIT = 2000
+
+
 def _format_tool_call(tc: dict) -> str:
     name = tc.get("name", "unknown_tool")
-    args = json.dumps(tc.get("arguments"), default=str)[:200]
-    result = json.dumps(tc.get("result"), default=str)[:200]
+    # ensure_ascii=False keeps accented text as itself. Escaping rewrites every accented
+    # letter as a six-character Unicode escape, spending the limit above on encoding
+    # rather than content (Italian weekday lists are the worst case) and costing ~7%
+    # more tokens without adding meaning: the model reads both forms identically.
+    args = json.dumps(tc.get("arguments"), default=str, ensure_ascii=False)[:_ARGS_CHAR_LIMIT]
+    result = json.dumps(tc.get("result"), default=str, ensure_ascii=False)[:_RESULT_CHAR_LIMIT]
     success = tc.get("success")
     status = " [FAILED]" if success is False else ""
     return f"  [tool call: {name}({args}) -> {result}{status}]"
@@ -161,6 +201,42 @@ def build_user_prompt(call: Call, config: AnalysisConfig) -> str:
             )
             schema["non_completion_reason"] = "string|null"
 
+    if bucketing_enabled(config):
+        ordered = ordered_for_prompt(bucket_categories(config))
+        choices = "\n".join(f'    {i}. "{c["key"]}" — {c["description"]}'
+                            for i, c in enumerate(ordered, 1))
+        sections.append(
+            '- "bucket" (string): what actually happened on this call. Choose EXACTLY '
+            "one key from the list below, copied verbatim. Never invent a key.\n"
+            f"{choices}\n"
+            "  The list is ordered by severity. A call can fit several — take the "
+            "FIRST one in this order that applies, not the one that feels most typical.\n"
+            "  HOW TO DECIDE WHEN A TOOL ASKED A QUESTION BACK: do not judge by wording. "
+            "When a tool result is a question or a request for more input rather than "
+            "data, read what happens after it. If the caller supplies the detail and a "
+            'later tool call containing that detail returns real data → "answered". If a '
+            "later tool call does contain the caller's answer and the tool still returns "
+            'a question or a generic non-answer → "tool_kept_asking". If the caller never '
+            'supplies it → "caller_abandoned".\n'
+            "  Ground every choice in the [tool call: ...] lines. What the assistant said "
+            "is not evidence that a tool returned it."
+        )
+        sections.append(
+            '- "issue_note" (string): ONE sentence describing what specifically happened '
+            "on this call — the detail the bucket key cannot carry. Name the actual "
+            "subject (which branch, which exam, which question), not a restatement of "
+            "the bucket."
+        )
+        sections.append(
+            '- "unanswered_query" (string or null): ONLY when bucket is '
+            '"record_missing" — the question that came back with nothing, worded as it '
+            "was sent to the tool (use the tool call's query argument where there is "
+            "one). Use null for every other bucket."
+        )
+        schema["bucket"] = "string"
+        schema["issue_note"] = "string"
+        schema["unanswered_query"] = "string|null"
+
     fields = config.extraction_fields or []
     if config.extraction_enabled and fields:
         field_specs = []
@@ -203,6 +279,22 @@ def build_user_prompt(call: Call, config: AnalysisConfig) -> str:
     )
 
 
+def _resolve_bucket(value: Any, categories: list[dict[str, str]]) -> str:
+    """Map the LLM's answer onto a configured bucket key.
+
+    Anything unrecognised becomes `other` rather than a new chart slice — the model is
+    never allowed to invent a key at runtime. Whatever made the call unusual belongs in
+    `issue_note`, which is reviewed on the Other page and promoted by hand.
+    """
+    if not value:
+        return FALLBACK_BUCKET
+    key = normalize_key(value)
+    valid = {c["key"] for c in categories}
+    if key in valid:
+        return key
+    return FALLBACK_BUCKET if FALLBACK_BUCKET in valid else next(iter(valid))
+
+
 def _coerce_number(value: Any) -> float | None:
     try:
         return float(value)
@@ -234,10 +326,29 @@ def apply_result(call: Call, config: AnalysisConfig, result: dict) -> None:
         rationale = success.get("rationale")
         call.success_rationale = str(rationale) if rationale else None
 
-    # The LLM classifies *why*, never *whether*: a reason is only persisted when the
-    # deterministic fields (`transferred`, and `success` from the block above) agree
-    # it applies. An agent that classified the call itself is left untouched, so
-    # re-analysis can't overwrite ground truth with a guess.
+    if bucketing_enabled(config):
+        categories = bucket_categories(config)
+        bucket = result.get("bucket")
+        call.bucket = _resolve_bucket(bucket, categories)
+        note = result.get("issue_note")
+        call.issue_note = str(note).strip()[:2000] if note else None
+        # Only meaningful for record_missing, and only trustworthy there — asked for as
+        # null everywhere else, but a model that fills it in anyway shouldn't be able to
+        # put a phantom line in the customer's Missing Information report.
+        query = result.get("unanswered_query")
+        call.unanswered_query = (
+            str(query).strip()[:500]
+            if query and call.bucket == "record_missing"
+            else None
+        )
+
+    # SUPERSEDED by the bucket block above; retained only so installs that still have
+    # classification_enabled on keep working. Note the `else` branches: they null the
+    # stored value whenever the LLM's reply lacks the field, and cannot tell "the model
+    # judged it inapplicable" from "we never asked". That is exactly why the old
+    # taxonomy is retired by turning classification_enabled OFF rather than by dropping
+    # the fields from the prompt — the latter would wipe every stored reason on the
+    # first re-analysis.
     if call.reason_source != "agent" and classification_enabled(config):
         transfer_reason = result.get("transfer_reason")
         if call.transferred and transfer_reason:
@@ -269,9 +380,19 @@ def apply_result(call: Call, config: AnalysisConfig, result: dict) -> None:
 
 
 async def analyze_call(call: Call, config: AnalysisConfig) -> None:
-    """Run analysis and write results onto the call object (not committed here)."""
-    if not call.turns:
-        raise ValueError("Call has no transcript turns to analyze")
+    """Run analysis and write results onto the call object (not committed here).
+
+    A call the caller never spoke on short-circuits here without an LLM request. It
+    used to raise, which marked the call `failed` and left it looking like an outage;
+    it is in fact a routine and frequent outcome (a silent line, or audio that never
+    reached STT), and the one bucket that can be decided from the data alone.
+    """
+    if not has_caller_audio(call):
+        if bucketing_enabled(config):
+            call.bucket = NO_CALLER_AUDIO
+            call.issue_note = "The caller never speaks in this call."
+            call.unanswered_query = None
+        return
     user_prompt = build_user_prompt(call, config)
     result = await chat_json(SYSTEM_PROMPT, user_prompt)
     apply_result(call, config, result)

@@ -58,6 +58,11 @@ export type Call = {
   success_score: number | null;
   success_rationale: string | null;
   structured_data: Record<string, unknown> | null;
+  // What happened on this call — one key from the configured taxonomy (buckets.py).
+  bucket: string | null;
+  issue_note: string | null;
+  unanswered_query: string | null;
+  // Superseded by `bucket`; historical values only, nothing writes them now.
   transfer_reason: string | null;
   non_completion_reason: string | null;
   reason_source: "agent" | "llm" | null;
@@ -96,10 +101,28 @@ export type Overview = {
   sentiment_distribution: Record<string, number>;
   outcome_distribution: Record<string, number>;
   end_reason_breakdown: { reason: string; count: number }[];
+  bucket_breakdown: { reason: string; count: number }[];
+  raw_answer_rate: number | null;
+  addressable_answer_rate: number | null;
   transfer_reason_breakdown: { reason: string; count: number }[];
   non_completion_reason_breakdown: { reason: string; count: number }[];
   agents: string[];
   agent_stats: AgentStats[];
+};
+
+export type Buckets = {
+  total_calls: number;
+  bucketed_calls: number;
+  distribution: { bucket: string; count: number }[];
+  raw_answer_rate: number | null;
+  addressable_answer_rate: number | null;
+  agent_stats: {
+    agent_id: string;
+    calls: number;
+    bucketed: number;
+    raw_answer_rate: number | null;
+    addressable_answer_rate: number | null;
+  }[];
 };
 
 export type AgentStats = {
@@ -195,6 +218,10 @@ export type AnalysisConfig = {
   output_language: string;
   extraction_enabled: boolean;
   extraction_fields: ExtractionField[];
+  bucketing_enabled: boolean;
+  buckets: ReasonCategory[];
+  // Superseded by `buckets`. Still round-tripped so an install that has it on keeps
+  // its saved taxonomy instead of silently resetting it.
   classification_enabled: boolean;
   transfer_reasons: ReasonCategory[];
   non_completion_reasons: ReasonCategory[];

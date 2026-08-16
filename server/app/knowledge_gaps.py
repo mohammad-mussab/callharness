@@ -83,6 +83,11 @@ OK = "ok"
 EMPTY = "empty"
 ERROR = "error"
 
+# The bucket that means "a lookup ran and the record was not there" — see buckets.py.
+# extract_gaps() keys off this rather than off the markers above; the docstring there
+# explains what went wrong with matching phrases.
+RECORD_MISSING_BUCKET = "record_missing"
+
 
 def _text_of(value: Any) -> str:
     if isinstance(value, str):
@@ -281,31 +286,59 @@ def cluster_questions(items: list[dict]) -> list[list[dict]]:
 
 
 def extract_gaps(call: Any) -> list[dict[str, Any]]:
-    """Every unanswered-because-missing-data moment in one call.
+    """The missing-record moment in one call, or nothing.
 
-    Requires `call.turns` loaded. Falls back to the nearest preceding user turn when a
-    tool call carried no query argument, so a gap is still reported with context even
-    for tools that take structured parameters.
+    WHY THIS NO LONGER MATCHES PHRASES
+    This used to walk every tool call and treat any result matching _EMPTY_MARKERS as a
+    gap. A marker reads one result in isolation with no idea what followed, and that is
+    not enough information to make the call. Measured over 120 live Lazio calls it
+    flagged 24 as having a gap, of which 3 had *completed successfully* because a later
+    tool answered the same question. The worst case is the graph replying "Non ho una
+    risposta per questo cerca nel RAG" ("I have no answer for this, search in the RAG"),
+    which is an instruction routing the agent to the other tool — internal plumbing,
+    reported to the customer as a missing record.
+
+    The judge reads the whole sequence and does not make that mistake, so a gap is now
+    exactly a call it bucketed `record_missing`, and the question is the one it named in
+    `unanswered_query`. The marker functions above are kept for other callers (and for
+    scripts/build_label_sheet.py, which has its own copy) but are off this path.
+
+    Falls back to the query argument of a tool call, then to the last user turn, when
+    the judge left `unanswered_query` empty — better a gap with rough wording than a
+    missing line in the report.
     """
-    gaps: list[dict[str, Any]] = []
-    last_user_text: str | None = None
+    if getattr(call, "bucket", None) != RECORD_MISSING_BUCKET:
+        return []
 
-    for turn in call.turns:
-        if turn.role == "user" and turn.text and turn.text.strip():
-            last_user_text = turn.text.strip()
-        for tool_call in turn.tool_calls or []:
-            if not isinstance(tool_call, dict):
-                continue
-            if classify_tool_result(tool_call.get("result")) != EMPTY:
-                continue
-            question = question_from_tool_call(tool_call) or last_user_text
-            if not question:
-                continue
-            gaps.append(
-                {
-                    "question": question,
-                    "normalized": normalize_question(question),
-                    "tool": tool_call.get("name") or "unknown_tool",
-                }
-            )
-    return gaps
+    question = (getattr(call, "unanswered_query", None) or "").strip()
+    tool = "unknown_tool"
+
+    if not question:
+        last_user_text: str | None = None
+        for turn in call.turns:
+            if turn.role == "user" and turn.text and turn.text.strip():
+                last_user_text = turn.text.strip()
+            for tool_call in turn.tool_calls or []:
+                if not isinstance(tool_call, dict):
+                    continue
+                candidate = question_from_tool_call(tool_call)
+                if candidate:
+                    question, tool = candidate, tool_call.get("name") or tool
+        question = question or (last_user_text or "")
+    else:
+        # Attribute the question to whichever tool was actually asked it, so the report
+        # still groups per lookup rather than lumping every tool together.
+        for turn in call.turns:
+            for tool_call in turn.tool_calls or []:
+                if isinstance(tool_call, dict) and tool_call.get("name"):
+                    tool = tool_call["name"]
+
+    if not question:
+        return []
+    return [
+        {
+            "question": question,
+            "normalized": normalize_question(question),
+            "tool": tool,
+        }
+    ]

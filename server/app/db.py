@@ -34,6 +34,15 @@ COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
     # TIMESTAMP, not DATETIME — the latter is a SQLite-ism Postgres rejects.
     ("calls", "log_blob", "VARCHAR(512)"),
     ("calls", "log_checked_at", "TIMESTAMP"),
+    # The single call-classification layer (see buckets.py). Note ALTER TABLE adds the
+    # column but not the index declared on the model — as is already true of
+    # transfer_reason above, an index only exists on databases create_all() built from
+    # scratch. Fine at current volumes; revisit if `?bucket=` filtering gets slow.
+    ("calls", "bucket", "VARCHAR(32)"),
+    ("calls", "issue_note", "TEXT"),
+    ("calls", "unanswered_query", "TEXT"),
+    ("analysis_config", "buckets", "JSON"),
+    ("analysis_config", "bucketing_enabled", "BOOLEAN DEFAULT TRUE"),
 ]
 
 

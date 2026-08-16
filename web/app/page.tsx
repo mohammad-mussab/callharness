@@ -76,6 +76,26 @@ export default function DashboardPage() {
         />
       </div>
 
+      {/* The two answer rates sit apart from the stat row above because they answer a
+          different question. "Success rate" is per-call pass/fail against the success
+          criteria; these are shares of the bucket taxonomy, and the addressable one
+          deliberately drops the calls nobody could have won. Shown only once bucketing
+          has produced something, so a fresh install isn't staring at two dashes. */}
+      {overview && (overview.bucket_breakdown?.length ?? 0) > 0 && (
+        <div className="grid grid-cols-2 gap-4">
+          <StatCard
+            label="Answered"
+            value={formatPercent(overview.raw_answer_rate)}
+            hint="of every classified call"
+          />
+          <StatCard
+            label="Answered (addressable)"
+            value={formatPercent(overview.addressable_answer_rate)}
+            hint="excludes needs-a-human, out of scope, no caller audio"
+          />
+        </div>
+      )}
+
       <div className="grid gap-4 lg:grid-cols-2">
         <Panel title="Call volume">{series ? <VolumeChart data={series} /> : null}</Panel>
         <Panel title="Outcome">
@@ -85,6 +105,11 @@ export default function DashboardPage() {
         <Panel title="Sentiment distribution">
           {overview ? <SentimentDonut distribution={overview.sentiment_distribution} /> : null}
         </Panel>
+        {overview && (overview.bucket_breakdown?.length ?? 0) > 0 && (
+          <Panel title="What happened">
+            <ReasonBars data={overview.bucket_breakdown} />
+          </Panel>
+        )}
         <Panel title="End reasons">
           {overview ? <ReasonBars data={overview.end_reason_breakdown} /> : null}
         </Panel>

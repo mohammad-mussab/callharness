@@ -66,8 +66,26 @@ class Call(Base):
     success_rationale: Mapped[str | None] = mapped_column(Text)
     structured_data: Mapped[dict | None] = mapped_column(JSON, default=None)
 
-    # Classification of *why* this call transferred / didn't complete, against the
-    # taxonomies on AnalysisConfig (seeded from taxonomy.py) — null unless applicable.
+    # What actually happened on this call, against the taxonomy on AnalysisConfig
+    # (seeded from buckets.py). Exactly one per analysed call, whatever its outcome —
+    # this is the axis that replaced transfer_reason/non_completion_reason, which only
+    # ever applied to transferred / non-completed calls respectively.
+    bucket: Mapped[str | None] = mapped_column(String(32), index=True)
+    # One sentence describing what happened on *this specific* call. The bucket is a
+    # fixed key so it can be charted and filtered; everything unique about the call
+    # lives here instead of fragmenting the taxonomy.
+    issue_note: Mapped[str | None] = mapped_column(Text)
+    # The question that hit nothing, in the words the tool was actually queried with.
+    # Set only on bucket == "record_missing". This is the line that goes in the Missing
+    # Information report and the string the verification sweep re-runs against the API.
+    unanswered_query: Mapped[str | None] = mapped_column(Text)
+
+    # SUPERSEDED by `bucket`. Kept with their existing values rather than dropped:
+    # DROP COLUMN destroys history with no undo, and disputes.py still reads them.
+    # Nothing writes them any more — the freeze is achieved by turning
+    # AnalysisConfig.classification_enabled off, which makes engine.apply_result() skip
+    # the assignment entirely. Removing the fields from the prompt instead would null
+    # every stored value on re-analysis; see the comment there.
     transfer_reason: Mapped[str | None] = mapped_column(String(32), index=True)
     non_completion_reason: Mapped[str | None] = mapped_column(String(32), index=True)
     # Where those two labels came from: "agent" (supplied at ingest by an agent that
@@ -184,9 +202,16 @@ class AnalysisConfig(Base):
     extraction_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     # list of {"name": str, "type": "text|boolean|number|enum", "description": str, "choices": [str]}
     extraction_fields: Mapped[list | None] = mapped_column(JSON, default=list)
-    # Classify why calls transfer / don't complete. Both taxonomies are lists of
-    # {"key": str, "description": str}, editable in Settings and seeded from
-    # taxonomy.py on first run; an empty list falls back to those defaults.
+    # Sort every analysed call into exactly one bucket. List of
+    # {"key": str, "description": str}, editable in Settings and seeded from buckets.py
+    # on first run; an empty list falls back to those defaults. The description is what
+    # the LLM reads to decide membership, so it does the real work.
+    bucketing_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    buckets: Mapped[list | None] = mapped_column(JSON, default=list)
+
+    # SUPERSEDED by `buckets`. Turning this off is what freezes Call.transfer_reason /
+    # Call.non_completion_reason at their existing values — see models.Call and
+    # analysis/engine.py apply_result().
     classification_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     transfer_reasons: Mapped[list | None] = mapped_column(JSON, default=list)
     non_completion_reasons: Mapped[list | None] = mapped_column(JSON, default=list)

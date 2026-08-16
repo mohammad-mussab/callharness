@@ -114,10 +114,20 @@ DEFAULT_BUCKETS: list[dict[str, str]] = [
     {
         "key": "agent_invented_answer",
         "description": (
-            "the assistant stated a specific fact — opening hours, a closure, a price, "
-            "an address, availability — that does not appear in any preceding tool "
-            "result, or stated it with no tool call at all. Compare what the assistant "
-            "said against the tool results above it before choosing this"
+            "the assistant told the caller a specific fact they could act on, and no "
+            "preceding tool result contains it. ANY kind of fact counts — an opening "
+            "hour, a closure, a price, how long a result takes, how a sample must be "
+            "collected, how long a prescription stays valid. There is no fixed list of "
+            "which facts qualify; the test is whether it was backed. HOW TO CHECK — do "
+            "this instead of judging by tone: take the assistant's main factual claim "
+            "and find the tool result that contains it, quoting the matching words to "
+            "yourself. If you cannot point to one, it was not backed and this is the "
+            "bucket. Do not credit a claim because the assistant sounded certain, or "
+            "because a tool call happened nearby — the tool result must actually "
+            "contain the fact. Worked example, an illustration and not the boundary: a "
+            'tool replying "ci sono chiusure straordinarie in 5 sedi della regione. Per '
+            'quale sede?" names NO branch, so an assistant that then says a particular '
+            "branch is closed cannot quote it from anywhere — that is this bucket"
         ),
     },
     {
@@ -182,14 +192,22 @@ DEFAULT_BUCKETS: list[dict[str, str]] = [
             "missing. So: if the agent then called that other tool and it answered, the "
             "question was answered and this is NOT the bucket; if it called it and that "
             "came back empty too, this IS the bucket; if it never made the follow-up "
-            'call at all, nothing was ever looked up — use "other"'
+            'call at all, nothing was ever looked up — that is "lookup_error", which '
+            "ranks above this one"
         ),
     },
     {
         "key": "lookup_error",
         "description": (
-            "a tool failed technically — timeout, 5xx, connection refused, exception, "
-            "traceback. Our infrastructure broke, as opposed to the data being absent"
+            "the lookup never completed, so we never found out whether the record "
+            "exists. Two shapes. (a) A tool failed technically — timeout, 5xx, "
+            "connection refused, exception, traceback. (b) A tool DEFERRED to another "
+            'tool and the agent never made that call: "Non ho una risposta per questo '
+            'cerca nel RAG" tells the agent to ask the knowledge base, so if no such '
+            "call follows, nothing was ever actually looked up. Either way this is OUR "
+            "failure, not the customer's data being absent — which is why it ranks "
+            "above record_missing. Filing it lower would send the customer a record to "
+            "add for a question we never asked"
         ),
     },
     {
@@ -201,7 +219,14 @@ DEFAULT_BUCKETS: list[dict[str, str]] = [
             "test is whether a human would still have been required if every record were "
             "present. Do NOT use this merely because the call was transferred — if the "
             'handoff happened because a lookup came back empty, that is "record_missing"; '
-            'if a tool failed technically, that is "lookup_error"'
+            'if a tool failed technically, that is "lookup_error". This bucket is about '
+            "what the CALLER needed. A TOOL RESULT saying a person is required — "
+            '"per questa richiesta è necessario parlare con un operatore" — is that tool '
+            "reporting it has no data for the question. It is not evidence a human was "
+            "ever required, and in most such calls the caller never asked for one. "
+            "Classify those by the failure behind the referral, usually "
+            '"record_missing", not by the referral itself. Only the caller asking for a '
+            "person, or a request that genuinely needs one, counts here"
         ),
     },
     {
@@ -223,12 +248,7 @@ DEFAULT_BUCKETS: list[dict[str, str]] = [
         "key": FALLBACK_BUCKET,
         "description": (
             "genuinely none of the above. Expected and fine — describe what happened in "
-            "issue_note so recurring cases can be promoted to their own bucket. One "
-            "specific case belongs here: a tool deferred to another tool (e.g. "
-            '"cerca nel RAG") and the agent never made that follow-up call. Say exactly '
-            "that in issue_note — name the tool that deferred and the call that was "
-            "never made — because it is our bug, not absent data, and it must not reach "
-            "the customer as a record they are asked to add"
+            "issue_note so recurring cases can be promoted to their own bucket"
         ),
     },
 ]
@@ -252,12 +272,20 @@ DEFAULT_BUCKETS: list[dict[str, str]] = [
 #     nonsense and comes back empty, so it looks exactly like absent data. Below
 #     record_missing it would put a question no customer can answer onto the list of
 #     records they are asked to add. Observed on a real call.
+#   - lookup_error outranks record_missing, same reasoning one step further: if the
+#     lookup never completed we never learned whether the record exists, so calling it
+#     missing is a guess billed to the customer. This placement is what makes the
+#     "deferred to another tool, never called it" case reachable at all. It first lived
+#     inside `other`, which cannot work: `other` is last, the prompt says take the FIRST
+#     match, so record_missing (higher) always won and the instruction never fired —
+#     verified on cd2a5a8e and 1dbdaacf, neither of which moved. 37 live calls sit in
+#     this shape, 34 of them filed as record_missing and reaching the customer as gaps.
 BUCKET_PRECEDENCE: tuple[str, ...] = (
     "agent_invented_answer",
     "tool_kept_asking",
     "not_understood",
-    "record_missing",
     "lookup_error",
+    "record_missing",
     "caller_abandoned",
     "needs_human",
     "out_of_scope",

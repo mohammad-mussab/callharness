@@ -95,6 +95,39 @@ _ARGS_CHAR_LIMIT = 500
 _RESULT_CHAR_LIMIT = 2000
 
 
+# Metadata keys the backends attach to every result. Measured across 721 live tool
+# calls: `confidence` is 1.0 on all 257 knowledge_base_new results, `source` is the same
+# string on all 257, and the result-level `success` is true on all 437 call_graph
+# results. Each has exactly ONE distinct value in production, so none can separate any
+# two calls — they carry no information whatsoever. They are not merely useless: 162 of
+# those 257 results report finding nothing ("Non ho trovato informazioni specifiche", a
+# clarifying question back, or a referral to an operator) and every one arrived stamped
+# confidence=1.0, success=true. The judge was being told a lookup had succeeded in the
+# same line that said it found nothing, which is why empty lookups kept scoring as
+# answers.
+#
+# Note what this deliberately is NOT: a list of phrases meaning "empty". Labelling a
+# result by matching its Italian prose is what knowledge_gaps._EMPTY_MARKERS does, and
+# that goes stale silently every time the backend LLM rewords itself. Dropping a key
+# whose value never varies is a structural fact about the payload, not a judgement about
+# its content, so it cannot drift.
+_RESULT_NOISE_KEYS = ("confidence", "source", "success")
+
+
+def _strip_result_noise(result: Any) -> Any:
+    """Drop constant metadata so only the payload reaches the judge."""
+    if not isinstance(result, dict):
+        return result
+    kept = {k: v for k, v in result.items() if k not in _RESULT_NOISE_KEYS}
+    if not kept:
+        # Nothing but metadata — here the metadata IS the content (check_service_price
+        # returns only {"action": ...}). Send it rather than an empty object.
+        return result
+    if set(kept) == {"answer"}:
+        return kept["answer"]  # unwrap: the answer is the entire payload
+    return kept
+
+
 def _format_tool_call(tc: dict) -> str:
     name = tc.get("name", "unknown_tool")
     # ensure_ascii=False keeps accented text as itself. Escaping rewrites every accented
@@ -102,7 +135,10 @@ def _format_tool_call(tc: dict) -> str:
     # rather than content (Italian weekday lists are the worst case) and costing ~7%
     # more tokens without adding meaning: the model reads both forms identically.
     args = json.dumps(tc.get("arguments"), default=str, ensure_ascii=False)[:_ARGS_CHAR_LIMIT]
-    result = json.dumps(tc.get("result"), default=str, ensure_ascii=False)[:_RESULT_CHAR_LIMIT]
+    payload = _strip_result_noise(tc.get("result"))
+    result = json.dumps(payload, default=str, ensure_ascii=False)[:_RESULT_CHAR_LIMIT]
+    # The SDK-level flag, a different thing from the result-level `success` stripped
+    # above: this one is set by the observer when the tool call itself raised.
     success = tc.get("success")
     status = " [FAILED]" if success is False else ""
     return f"  [tool call: {name}({args}) -> {result}{status}]"

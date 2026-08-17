@@ -263,6 +263,22 @@ class AnalysisConfigIn(BaseModel):
     # knowledge base, so an unconfigured install simply cannot verify.
     lookup_probes: list[LookupProbe] = Field(default_factory=list)
 
+    @field_validator("lookup_probes", "buckets", "extraction_fields", "transfer_reasons",
+                     "non_completion_reasons", mode="before")
+    @classmethod
+    def _null_is_empty(cls, v):
+        """A JSON column added by ALTER TABLE holds NULL, not [].
+
+        `default=list` on the model only applies to rows SQLAlchemy inserts, so on every
+        install that already existed the new column comes back None and a `list[...]`
+        field rejects it — which took out GET /config/analysis, and with it the whole
+        Settings page, the moment this deployed. The taxonomies escaped that only because
+        `get_or_create_config()` materializes their defaults on first access; lookup_probes
+        has no defaults to materialize, and must not grow any. They are all listed here so
+        the next JSON column added cannot reintroduce this.
+        """
+        return [] if v is None else v
+
 
 class AnalysisConfigOut(AnalysisConfigIn):
     updated_at: datetime | None = None

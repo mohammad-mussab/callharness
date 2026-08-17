@@ -315,7 +315,11 @@ async def group_knowledge_gaps(
 
     await session.commit()
     return GapGroupingOut(
-        considered=len(items),
+        # What this pass actually handled, not what was queued. group_gaps() caps the
+        # batch, so len(items) is the size of the backlog — reporting that as
+        # "considered" claimed 222 questions when 60 had been looked at, and the page
+        # sums this across passes, which turned the running total into nonsense.
+        considered=len(assigned),
         grouped=grouped_calls,
         needs_review=review_calls,
         new_groups=len(new_groups),

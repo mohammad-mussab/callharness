@@ -41,15 +41,19 @@ GAP_NEEDS_REVIEW = "needs_review"
 # One id per call in the batch; the model only ever sees these short integers, never a
 # call id, so a hallucinated identifier cannot silently address the wrong row.
 #
-# 60 rather than "all of them" for two reasons, both learned on the first real run
-# against the 216 live Lazio gaps. Latency: gpt-5 reasons over the whole batch before
-# emitting anything, and 216 questions blew straight through the HTTP timeout, failing
-# the request after minutes of work and charging for it. Truncation: a reply listing 216
-# groups is long enough to get cut off mid-JSON, which loses the entire pass rather than
-# one group. A press handles one batch and reports `remaining`, so the caller repeats
-# until it reaches zero — and each batch is shown the groups the earlier ones created, so
-# splitting the work does not fragment records across batches.
-_MAX_BATCH = 60
+# Small rather than "all of them", for three reasons, all learned on real runs against
+# the 223 live Lazio gaps. Latency: gpt-5 reasons over the whole batch before emitting
+# anything, and 216 questions blew straight through the HTTP timeout, failing the request
+# after minutes of billed work. Truncation: a reply listing 216 groups is long enough to
+# be cut off mid-JSON, losing the whole pass rather than one group. And human patience:
+# 60 questions measured 110s once and 3m21s the next time, and a button that sits silent
+# for three and a half minutes gets reloaded, which starts a second pass over rows the
+# first has not committed yet. 30 keeps a pass to roughly a minute.
+#
+# A press handles one batch and reports `remaining`, so the caller repeats until it hits
+# zero — and every batch is shown the groups earlier ones created, so splitting the work
+# does not fragment one record across batches.
+_MAX_BATCH = 30
 
 # A reasoning model over 60 questions runs well past the 120s default. Generous rather
 # than tight: the cost of waiting is a slow button, the cost of timing out is a request

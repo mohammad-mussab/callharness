@@ -86,10 +86,14 @@ export default function GapsPage() {
         if (res.considered === 0 || res.remaining <= 0) break;
       }
     } catch (e) {
+      const msg = e instanceof Error ? e.message : "Grouping failed";
+      // 409 means another pass (often one left running by a reload) still holds the lock.
+      // That is not a failure and must not read like one, or the natural response is to
+      // press again and make it worse.
       setError(
-        e instanceof Error
-          ? `${e.message} — anything already grouped has been saved; press again to continue.`
-          : "Grouping failed"
+        msg.includes("409")
+          ? "A grouping pass is already running — it keeps going even after a reload. Wait for it to finish, then reload this page."
+          : `${msg} — everything grouped so far has been saved. Press again to continue.`
       );
     } finally {
       setGrouping(false);
@@ -210,6 +214,15 @@ export default function GapsPage() {
       {error && (
         <div className="rounded-lg border border-red-900/60 bg-red-950/30 p-3 text-sm text-red-300">
           {error}
+        </div>
+      )}
+
+      {grouping && (
+        <div className="rounded-lg border border-indigo-900/60 bg-indigo-950/20 p-3 text-sm text-indigo-300">
+          Grouping in batches — each takes a minute or two.{" "}
+          <strong className="font-semibold">Don&apos;t reload the page.</strong> The pass
+          keeps running on the server if you do, and pressing the button again would send
+          the same questions a second time.
         </div>
       )}
 

@@ -1,9 +1,10 @@
+import asyncio
 import math
 from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -228,6 +229,21 @@ async def knowledge_gaps(
     )
 
 
+# One grouping pass at a time, per API process.
+#
+# Two concurrent passes both read the ungrouped rows before either commits, so they send
+# the SAME questions to the model — paying twice, and letting the second overwrite the
+# first's assignments, which can split a record that had just been merged. This is not
+# hypothetical: a pass takes minutes, and reloading the page mid-run leaves the server
+# working while the browser starts a fresh one. Observed in production, twice against the
+# same 105 rows.
+#
+# An asyncio.Lock is sufficient because the API is a single uvicorn process — the analysis
+# worker runs inside it, which is the same reason scripts/reanalyze.py must not analyse.
+# Running with --workers > 1 would need a database-level lock instead.
+_grouping_lock = asyncio.Lock()
+
+
 @router.post(
     "/knowledge-gaps/group",
     response_model=GapGroupingOut,
@@ -248,7 +264,26 @@ async def group_knowledge_gaps(
     Existing groups are collected across the WHOLE database rather than the requested
     window. Scoping them to the window would hide a group whose calls are all older than
     `days` and let the model create a second group for the same record.
+
+    Refuses to run alongside another pass — see `_grouping_lock`. Rejecting is better than
+    queueing here: a pass takes minutes, so a queued request would hold the connection
+    long past any proxy's patience, and the caller would rather be told to wait.
     """
+    if _grouping_lock.locked():
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "A grouping pass is already running. It keeps going even if you reload "
+                "the page — wait for it to finish, then reload to see the result."
+            ),
+        )
+    async with _grouping_lock:
+        return await _run_grouping_pass(session, agent_id, days)
+
+
+async def _run_grouping_pass(
+    session: AsyncSession, agent_id: str | None, days: int
+) -> GapGroupingOut:
     since = utcnow() - timedelta(days=days)
     window = select(Call).options(selectinload(Call.turns)).where(
         Call.started_at >= since, Call.bucket == RECORD_MISSING_BUCKET

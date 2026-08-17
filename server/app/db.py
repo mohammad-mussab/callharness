@@ -51,6 +51,11 @@ COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
     # pass rather than by per-call analysis. NULL = not grouped yet.
     ("calls", "gap_group_id", "VARCHAR(64)"),
     ("calls", "gap_group_question", "TEXT"),
+    # Where to re-ask a missing-record question, to prove it is really missing
+    # (gap_verification.py). The gap_groups and gap_verifications TABLES need no entry
+    # here — create_all() below builds missing tables; only new columns on tables that
+    # already exist have to be listed.
+    ("analysis_config", "lookup_probes", "JSON"),
 ]
 
 # Columns to remove from existing databases. Separate from COLUMN_MIGRATIONS because

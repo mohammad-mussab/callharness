@@ -109,6 +109,65 @@ export function BucketBadge({
   );
 }
 
+// How far a missing record has got — see server/app/gap_verification.py.
+//
+// Deliberately NOT folded into StatusBadge above: that one is about the analysis
+// pipeline, this one is about a customer deliverable, and the two coexist on the
+// same row. Colour carries the meaning that matters when scanning the list: amber
+// = proved missing and waiting to be reported, green = closed one way or another,
+// red = the question itself is not usable, zinc = nothing has happened yet.
+const GAP_STATUS_STYLES: Record<string, string> = {
+  not_verified: "bg-zinc-700/40 text-zinc-400",
+  confirmed_missing: "bg-amber-500/15 text-amber-300",
+  found_in_source: "bg-sky-500/15 text-sky-300",
+  bad_question: "bg-red-500/15 text-red-400",
+  verify_error: "bg-orange-500/15 text-orange-300",
+  sent: "bg-violet-500/15 text-violet-300",
+  added: "bg-lime-500/15 text-lime-300",
+  added_confirmed: "bg-emerald-500/15 text-emerald-400",
+};
+
+const GAP_STATUS_LABELS: Record<string, string> = {
+  not_verified: "Not checked",
+  confirmed_missing: "Missing — confirmed",
+  found_in_source: "Found — our lookup failed",
+  bad_question: "Question not usable",
+  verify_error: "Check failed",
+  sent: "Sent",
+  added: "Added — not re-checked",
+  added_confirmed: "Added — confirmed",
+};
+
+// Why each label says what it says, since several are easy to misread:
+//   found_in_source — the record IS there. The call failed because retrieval missed
+//                     it, which is our bug, so it must not go on the customer's list.
+//   verify_error    — the lookup never completed (endpoint down, wrong tool name), so
+//                     nothing was learned. Not a finding about their data.
+//   bad_question    — the question was built from mis-heard speech; nobody can add a
+//                     record for it.
+export function GapStatusBadge({
+  status,
+  note = null,
+}: {
+  status: string | null;
+  note?: string | null;
+}) {
+  const key = status || "not_verified";
+  const base = GAP_STATUS_LABELS[key] ?? titleCase(key);
+  return (
+    <span
+      className={`${badgeBase} ${GAP_STATUS_STYLES[key] ?? "bg-zinc-700/40 text-zinc-300"}`}
+      title={note ? `${base} — ${note}` : base}
+    >
+      {base}
+    </span>
+  );
+}
+
+export function gapStatusLabel(status: string): string {
+  return GAP_STATUS_LABELS[status] ?? titleCase(status);
+}
+
 // Shown alongside OutcomeBadge (which already says "Transferred"/"Non-completed"),
 // so these only need to add the *reason*, not repeat the outcome itself.
 // `source` says who decided: the agent sent it with the call, or CallHarness's

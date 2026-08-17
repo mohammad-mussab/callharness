@@ -119,6 +119,15 @@ class Call(Base):
     evaluation_results: Mapped[list["EvaluationResult"]] = relationship(
         back_populates="call", cascade="all, delete-orphan"
     )
+    # Every attempt at proving this call's missing record really is missing. Usually
+    # empty: verification runs per GROUP, and only the member whose transcript was read
+    # carries the row. Kept on Call anyway so the call detail page can show the evidence
+    # without knowing anything about groups.
+    gap_verifications: Mapped[list["GapVerification"]] = relationship(
+        back_populates="call",
+        cascade="all, delete-orphan",
+        order_by="GapVerification.created_at.desc()",
+    )
 
 
 class Turn(Base):
@@ -232,4 +241,131 @@ class AnalysisConfig(Base):
     classification_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     transfer_reasons: Mapped[list | None] = mapped_column(JSON, default=list)
     non_completion_reasons: Mapped[list | None] = mapped_column(JSON, default=list)
+
+    # The lookup APIs to re-ask a "missing record" question against, so a gap is proved
+    # rather than assumed. List of
+    #   {"key", "label", "url", "method", "headers", "body_template", "result_path",
+    #    "enabled", "agent_ids"}
+    # where body_template contains {{query}}. See gap_verification.py for the contract.
+    #
+    # `agent_ids` is which regions the source serves; empty means every region. A call is
+    # never probed by a source that does not list its agent_id, because these backends
+    # dispatch on a region-specific tool name and answer an unrecognised one with 200 OK
+    # and a polite sentence — read as data, that sentence becomes "this record is missing
+    # from your database" for every single gap.
+    #
+    # Defaults to EMPTY, unlike buckets/taxonomies: those have sensible universal
+    # defaults, a lookup endpoint does not. An empty list makes the whole verification
+    # feature inert, which is the right behaviour for every install that has not pointed
+    # it at its own agent's knowledge sources.
+    lookup_probes: Mapped[list | None] = mapped_column(JSON, default=list)
+
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class GapGroup(Base):
+    """One missing record, and how far it has got towards being fixed.
+
+    WHY THE STATE LIVES HERE AND NOT ON THE CALL
+
+    A "missing record" is not a call — it is a question several calls asked in different
+    words, merged by the grouping pass (gap_grouping.py). Verifying it means asking the
+    lookup API once, about the canonical wording, and that one answer is about the record
+    rather than about any particular call. Storing the verdict on each member call instead
+    would let a call claim "verified missing" for a question that was only ever probed in
+    somebody else's phrasing.
+
+    The row is created LAZILY, on first verification — the grouping pass writes only
+    `Call.gap_group_id` / `Call.gap_group_question` and knows nothing about this table.
+    That is what keeps grouping and verification independent of each other.
+
+    `id` matches `Call.gap_group_id` but is deliberately NOT a foreign key in either
+    direction: `gap_group_id` also holds the reserved GAP_NEEDS_REVIEW value, membership
+    is cleared by re-analysis without warning, and a group row must be able to outlive
+    the loss of a member.
+    """
+
+    __tablename__ = "gap_groups"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # Which region's probes to use. Taken from the members, all of which share it — a
+    # Lazio question must never be sent to a Piemonte endpoint.
+    agent_id: Mapped[str] = mapped_column(String(255), index=True)
+    # The canonical question as it stood when this was last verified. Duplicated from
+    # Call.gap_group_question on purpose: it is the exact string the verdict is about, so
+    # a later re-grouping that rewords the headline cannot silently re-point the evidence.
+    question: Mapped[str | None] = mapped_column(Text)
+
+    # not_verified (NULL) | confirmed_missing | found_in_source | bad_question |
+    # verify_error | sent | added | added_confirmed. See gap_verification.py for the order
+    # these happen in and for the one-way rule that protects `sent`.
+    status: Mapped[str | None] = mapped_column(String(32), index=True)
+    status_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # One line saying why it landed in that state — shown on the row so a verdict never
+    # has to be taken on trust.
+    status_note: Mapped[str | None] = mapped_column(Text)
+    # Stamped when the record goes out to the customer, shared by everything sent
+    # together. This is what stops the same missing record being reported again tomorrow.
+    sent_batch: Mapped[str | None] = mapped_column(String(64), index=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+    verifications: Mapped[list["GapVerification"]] = relationship(
+        back_populates="group", order_by="GapVerification.created_at.desc()"
+    )
+
+
+class GapVerification(Base):
+    """One attempt at proving a "missing record" really is missing.
+
+    Kept as a history rather than a single column on GapGroup because a re-check after the
+    customer says they have added the record must not erase the evidence that it was
+    absent before — that pair of rows IS the proof the fix landed. It is also the only
+    place the actual API responses are stored, and a verdict nobody can inspect is a
+    verdict nobody should act on.
+    """
+
+    __tablename__ = "gap_verifications"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    # The record this is about. SET NULL rather than CASCADE: ungrouping a wrong merge
+    # destroys the record but not what was learned, and the evidence stays reachable from
+    # the call below.
+    group_id: Mapped[str | None] = mapped_column(
+        ForeignKey("gap_groups.id", ondelete="SET NULL"), index=True
+    )
+    # The member call whose transcript was read for context — which day the caller meant,
+    # and whether the question was heard correctly. Named because the evidence has to say
+    # which call it was reasoning about.
+    call_id: Mapped[str] = mapped_column(ForeignKey("calls.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+    # confirmed_missing | found_in_source | bad_question | verify_error
+    verdict: Mapped[str] = mapped_column(String(32), index=True)
+
+    # The canonical question as the report showed it, and the question actually sent after
+    # resolving dates and (where the wording was garbled) correcting it. Keeping both is
+    # what lets you see that a verdict was reached about a different sentence.
+    question_original: Mapped[str | None] = mapped_column(Text)
+    question_resolved: Mapped[str | None] = mapped_column(Text)
+
+    # The calendar date the caller meant, worked out from the member call's own start
+    # time, and the date we ended up asking about. They differ when the caller's day had
+    # already passed by the time we checked — an empty answer about a day that is over is
+    # not evidence of a missing record, so the substitution has to be visible.
+    date_meant: Mapped[str | None] = mapped_column(String(10))
+    date_probed: Mapped[str | None] = mapped_column(String(10))
+
+    # Why the question was judged usable or garbled, and why the replies were read the way
+    # they were.
+    question_note: Mapped[str | None] = mapped_column(Text)
+
+    # [{"probe_key", "probe_label", "variant", "variant_kind", "url", "http_status",
+    #   "ms", "response", "verdict": "ok"|"empty"|"error"}, ...]
+    probes: Mapped[list | None] = mapped_column(JSON, default=list)
+
+    llm_model: Mapped[str | None] = mapped_column(String(128))
+
+    call: Mapped[Call] = relationship(back_populates="gap_verifications")
+    group: Mapped[GapGroup | None] = relationship(back_populates="verifications")

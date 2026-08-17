@@ -61,6 +61,9 @@ export type Call = {
   bucket: string | null;
   issue_note: string | null;
   unanswered_query: string | null;
+  // Which missing record this call was merged into, and that record's canonical wording.
+  gap_group_id: string | null;
+  gap_group_question: string | null;
   // Superseded by `bucket`; historical values only, nothing writes them now.
   transfer_reason: string | null;
   non_completion_reason: string | null;
@@ -81,7 +84,14 @@ export type EvaluationResult = {
   created_at: string;
 };
 
-export type CallDetail = Call & { turns: Turn[]; evaluations: EvaluationResult[] };
+export type CallDetail = Call & {
+  turns: Turn[];
+  evaluations: EvaluationResult[];
+  // Read from the gap group this call belongs to, not from the call — verification is
+  // about the record, and several calls share one.
+  gap_status: GapStatus | null;
+  gap_status_note: string | null;
+};
 
 export type CallList = {
   items: Call[];
@@ -181,7 +191,29 @@ export type KnowledgeGap = {
   group_id: string | null;
   grouped: boolean;
   needs_review: boolean;
+  // How far this record has got towards being fixed — see gap_verification.py.
+  // "not_verified" until somebody re-asks the lookup API about it.
+  status: GapStatus;
+  status_at: string | null;
+  status_note: string | null;
+  sent_batch: string | null;
+  // The region this record's calls belong to, and how many lookup sources are configured
+  // for that region. Zero means Verify cannot run — a source only serves the regions it
+  // lists, and probing another region's endpoint answers "Tool non supportato", which
+  // read as data becomes "this record is missing".
+  agent_id: string | null;
+  probes_configured: number;
 };
+
+export type GapStatus =
+  | "not_verified"
+  | "confirmed_missing"
+  | "found_in_source"
+  | "bad_question"
+  | "verify_error"
+  | "sent"
+  | "added"
+  | "added_confirmed";
 
 export type KnowledgeGaps = {
   window_days: number;
@@ -204,6 +236,66 @@ export type GapGrouping = {
   new_groups: number;
   remaining: number;
   warnings: string[];
+};
+
+/** One request to one source with one wording of the question. Shown in full on the row:
+ *  a verdict about somebody's data that cannot be inspected is one nobody should act on. */
+export type ProbeAttempt = {
+  probe_key: string;
+  probe_label: string;
+  variant: string;
+  variant_kind: "canonical" | "paraphrase" | "dated" | "corrected" | "test" | string;
+  url: string | null;
+  http_status: number | null;
+  ms: number | null;
+  response: string | null;
+  verdict: "ok" | "empty" | "error";
+};
+
+export type GapVerification = {
+  id: string;
+  created_at: string;
+  verdict: GapStatus;
+  group_id: string | null;
+  call_id: string;
+  question_original: string | null;
+  question_resolved: string | null;
+  // Differ when the caller's day had already passed and a same-weekday substitute was
+  // used instead — an empty answer about a day that is over proves nothing.
+  date_meant: string | null;
+  date_probed: string | null;
+  question_note: string | null;
+  llm_model: string | null;
+  probes: ProbeAttempt[];
+};
+
+export type GapGroupStatus = {
+  group_id: string;
+  status: GapStatus;
+  status_at: string | null;
+  status_note: string | null;
+  sent_batch: string | null;
+};
+
+/** What a run would cost, before anything is spent. Every probe lands on the customer's
+ *  live service — the same instance answering phone calls — so the page asks first. */
+export type GapVerifyPlan = {
+  groups: number;
+  requests: number;
+  sources: string[];
+  // Records that cannot be checked because no source is configured for their region.
+  unroutable: Record<string, number>;
+};
+
+export type GapVerifyRun = {
+  running: boolean;
+  total: number;
+  done: number;
+  started_at: string | null;
+  finished_at: string | null;
+  current_group_id: string | null;
+  verdicts: Record<string, number>;
+  error: string | null;
 };
 
 export type TimeseriesPoint = {
@@ -243,6 +335,25 @@ export type AnalysisConfig = {
   classification_enabled: boolean;
   transfer_reasons: ReasonCategory[];
   non_completion_reasons: ReasonCategory[];
+  // Where a missing-record question gets re-asked. No default — an empty list means
+  // verification is off, not "use the built-in one".
+  lookup_probes: LookupProbe[];
+};
+
+export type LookupProbe = {
+  key: string;
+  label: string;
+  url: string;
+  method: "POST" | "GET" | "PUT";
+  headers: Record<string, string>;
+  // Must be valid JSON and contain {{query}}; both are enforced on save.
+  body_template: string;
+  result_path: string;
+  enabled: boolean;
+  // Which regions this source serves; empty means all of them. Not a convenience filter:
+  // these backends dispatch on a region-specific tool name and answer an unrecognised one
+  // with 200 OK and a polite sentence.
+  agent_ids: string[];
 };
 
 export type LatencyStats = {
@@ -339,6 +450,17 @@ export async function apiSend(url: string, method: string, body?: unknown) {
     headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-  if (!res.ok) throw new Error(`API error ${res.status}`);
+  if (!res.ok) {
+    // The status code alone is not enough for the verification endpoints: a 400 there
+    // means something specific and fixable ("no lookup source is configured for region
+    // Lazio", "only records proved missing can be marked as sent"), and hiding it behind
+    // "API error 400" turns a clear instruction into a mystery. The prefix is kept so
+    // callers that test for a code — the gaps page checks for 409 — keep working.
+    const detail = await res
+      .json()
+      .then((body) => (typeof body?.detail === "string" ? body.detail : null))
+      .catch(() => null);
+    throw new Error(detail ? `API error ${res.status}: ${detail}` : `API error ${res.status}`);
+  }
   return res.status === 204 ? null : res.json();
 }

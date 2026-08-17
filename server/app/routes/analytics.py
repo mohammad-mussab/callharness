@@ -22,9 +22,10 @@ from ..disputes import (
 from ..analysis.engine import non_completion_categories, transfer_categories
 from ..analysis.worker import get_or_create_config
 from ..auth import require_api_key
+from .. import gap_verification as gv
 from ..gap_grouping import GAP_NEEDS_REVIEW, group_gaps
 from ..knowledge_gaps import RECORD_MISSING_BUCKET, extract_gaps
-from ..models import Call, Turn, utcnow
+from ..models import Call, GapGroup, GapVerification, Turn, utcnow
 from ..outcome import compute_outcome
 from ..schemas import (
     BucketsOut,
@@ -160,6 +161,17 @@ async def knowledge_gaps(
             key = stored or f"call:{occurrence['call'].id}"
         buckets[key].append(occurrence)
 
+    # Verification state, read from the GapGroup rows. Fetched in one query keyed on the
+    # stored group ids — an ungrouped row has no record to have a verdict about, and a
+    # needs-review row is never verifiable, so both simply come back with no status.
+    stored_ids = {
+        o["call"].gap_group_id
+        for o in occurrences
+        if o["call"].gap_group_id and o["call"].gap_group_id != GAP_NEEDS_REVIEW
+    }
+    verification = await gv.load_groups(session, sorted(stored_ids))
+    config = await get_or_create_config(session)
+
     groups: list[dict[str, Any]] = []
     needs_review: list[dict[str, Any]] = []
     for group_id, items in buckets.items():
@@ -203,6 +215,19 @@ async def knowledge_gaps(
             "grouped": not is_ungrouped,
             "needs_review": is_review,
         }
+
+        # How far this record has got towards being fixed, and whether it *can* be
+        # checked. `probes_configured` is per region because a source only serves the
+        # regions it lists — a page that offered Verify on a record with no source for its
+        # region would fail on the press instead of explaining itself.
+        agent_id = items[0]["call"].agent_id
+        stored = None if (is_ungrouped or is_review) else verification.get(group_id)
+        row["agent_id"] = agent_id
+        row["probes_configured"] = len(gv.probes_for_agent(config, agent_id))
+        row["status"] = gv.status_of(stored) if stored else gv.NOT_VERIFIED
+        row["status_at"] = stored.status_at if stored else None
+        row["status_note"] = stored.status_note if stored else None
+        row["sent_batch"] = stored.sent_batch if stored else None
         (needs_review if is_review else groups).append(row)
 
     # Most-asked first, then most transfers, then newest. The last key is what stops the
@@ -375,6 +400,17 @@ async def ungroup_knowledge_gap(
     call it has already placed, so without this a bad merge would be permanent and every
     later call matching it would pile in behind the wrong headline. Costs nothing: it
     clears the two columns and the calls reappear in the ungrouped pool for the next pass.
+
+    THE VERDICT GOES WITH THE RECORD. What was proved missing was the *merged* question,
+    and after this that question no longer exists — so the GapGroup row is deleted and its
+    members come back unverified. Keeping the verdict on the released calls would let each
+    one claim it had been checked in wording it never used, which is the same hiding that
+    made string clustering unusable.
+
+    The EVIDENCE survives: each GapVerification keeps its call, its variants and the raw
+    replies, and only loses its pointer to the deleted record. So the call detail page can
+    still show what was asked and what came back, even though the record it belonged to
+    has been split.
     """
     calls = (
         await session.execute(select(Call).where(Call.gap_group_id == group_id))
@@ -382,6 +418,21 @@ async def ungroup_knowledge_gap(
     for call in calls:
         call.gap_group_id = None
         call.gap_group_question = None
+
+    # Explicit rather than relying on ON DELETE SET NULL: SQLite only enforces foreign
+    # keys when the pragma is on, which it is not by default.
+    verifications = (
+        await session.execute(
+            select(GapVerification).where(GapVerification.group_id == group_id)
+        )
+    ).scalars().all()
+    for verification in verifications:
+        verification.group_id = None
+
+    group = await session.get(GapGroup, group_id)
+    if group is not None:
+        await session.delete(group)
+
     await session.commit()
     return GapUngroupOut(group_id=group_id, calls_released=len(calls))
 

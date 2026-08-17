@@ -1,29 +1,49 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
 import {
   apiSend,
   fetcher,
   type GapGrouping,
+  type GapVerification,
+  type GapVerifyPlan,
+  type GapVerifyRun,
   type KnowledgeGap,
   type KnowledgeGaps,
   type Overview,
 } from "@/lib/api";
+import { GapStatusBadge } from "@/components/Badges";
 import { formatDate } from "@/lib/format";
 
 const selectClass =
   "rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-300";
 
+// The working list: records that still need a decision or an action from us.
+// Everything else is filed into its own section below, because those need a different
+// kind of attention (or none at all).
+const OPEN_STATUSES = ["not_verified", "confirmed_missing", "verify_error"];
+
+/** Records that go in the email: proved missing against the real lookup API, and not
+ *  already reported. The second half is the whole point of the sent batch — a record the
+ *  customer is already working on must not reappear on tomorrow's list. */
+function isSendable(g: KnowledgeGap) {
+  return g.status === "confirmed_missing" && !g.sent_batch;
+}
+
 export default function GapsPage() {
   const [agent, setAgent] = useState("");
   const [days, setDays] = useState("7");
   const [minCount, setMinCount] = useState("1");
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<string[] | null>(null);
   const [grouping, setGrouping] = useState(false);
   const [result, setResult] = useState<GapGrouping | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [plan, setPlan] = useState<GapVerifyPlan | null>(null);
+  const [planning, setPlanning] = useState(false);
+  const [verifyingOne, setVerifyingOne] = useState<string | null>(null);
 
   const params = new URLSearchParams({ days, min_count: minCount });
   if (agent) params.set("agent_id", agent);
@@ -35,14 +55,41 @@ export default function GapsPage() {
   );
   const { data: overview } = useSWR<Overview>("/api/v1/analytics/overview", fetcher);
 
+  // Polled only while a batch is running, so an idle page makes no requests. A run keeps
+  // going on the server across reloads, so this also picks up a run somebody else started.
+  const { data: run, mutate: mutateRun } = useSWR<GapVerifyRun>(
+    "/api/v1/gaps/verify/status",
+    fetcher,
+    { refreshInterval: (latest) => (latest?.running ? 3000 : 0) }
+  );
+
+  // When a run finishes, the verdicts on the page are stale — pull them once.
+  const running = run?.running ?? false;
+  useEffect(() => {
+    if (!running && run?.finished_at) void mutate();
+  }, [running, run?.finished_at, mutate]);
+
   // A dashboard built from this checkout is routinely pointed at a backend that has not
   // been redeployed yet — that is the whole point of web/.env.local forwarding to the
   // VM's API, so a UI change can be judged against real calls before it ships. An older
   // backend simply omits the fields added here, so default them rather than letting the
   // page die on `undefined.length` when the two halves are out of step.
+  //
+  // Verification specifically has to be told apart from "no sources configured", because
+  // the two look identical after defaulting and lead to opposite actions: one is "deploy
+  // the server", the other is "fill in Analysis Settings". A row from a backend that has
+  // verification always carries `status`; one from an older backend never does.
+  const backendHasVerification =
+    !raw || (raw.groups ?? []).length === 0 || "status" in raw.groups[0];
+
   const data: KnowledgeGaps | undefined = raw && {
     ...raw,
-    groups: raw.groups ?? [],
+    groups: (raw.groups ?? []).map((g) => ({
+      ...g,
+      status: g.status ?? "not_verified",
+      probes_configured: g.probes_configured ?? 0,
+      agent_id: g.agent_id ?? null,
+    })),
     needs_review: raw.needs_review ?? [],
     ungrouped_count: raw.ungrouped_count ?? 0,
   };
@@ -50,6 +97,25 @@ export default function GapsPage() {
   // Only meaningful once something has been merged: before that every row is one call
   // and every count is 1, so the filter would empty the page rather than narrow it.
   const hasGrouping = (data?.groups ?? []).some((g) => g.grouped);
+  const groups = data?.groups ?? [];
+  const byStatus = (...statuses: string[]) =>
+    groups.filter((g) => statuses.includes(g.status));
+
+  const open = byStatus(...OPEN_STATUSES);
+  const sendable = groups.filter(isSendable);
+  // Records that HAVE been through grouping and still need a decision. The button is
+  // shown whenever any of these exist and disabled with a reason when they cannot
+  // actually be checked — hiding it made a missing deployment and a missing setting
+  // indistinguishable from "this feature does not exist".
+  const verifiable = open.filter((g) => g.grouped && g.status !== "confirmed_missing");
+  const checkable = verifiable.filter((g) => g.probes_configured > 0);
+  const probesMissing =
+    backendHasVerification && groups.some((g) => g.grouped && g.probes_configured === 0);
+  const verifyBlocked = !backendHasVerification
+    ? "The backend this dashboard is reading does not have verification yet — deploy the server, or point CALLHARNESS_API_URL at one that does."
+    : checkable.length === 0 && verifiable.length > 0
+      ? "No lookup source is configured for these records' regions. Add one in Analysis Settings."
+      : null;
 
   // The server handles a bounded batch per request — a reasoning model over every
   // ungrouped question at once is slow enough to time out, and a reply that long can come
@@ -113,25 +179,87 @@ export default function GapsPage() {
     }
   }
 
+  /** Ask what a sweep would cost before spending any of it. Every probe lands on the
+   *  customer's live service — no rate limiting, no caching, the same instance answering
+   *  phone calls — so this is shown and confirmed rather than reported afterwards. */
+  async function askPlan() {
+    setPlanning(true);
+    setError(null);
+    try {
+      const res = (await apiSend("/api/v1/gaps/verify/plan", "POST", {
+        agent_id: agent || null,
+        days: Number(days),
+        limit: 500,
+      })) as GapVerifyPlan;
+      setPlan(res);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not work out the cost");
+    } finally {
+      setPlanning(false);
+    }
+  }
+
+  async function startRun() {
+    setPlan(null);
+    setError(null);
+    try {
+      await apiSend("/api/v1/gaps/verify", "POST", {
+        agent_id: agent || null,
+        days: Number(days),
+        limit: 500,
+      });
+      await mutateRun();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not start the run");
+    }
+  }
+
+  async function verifyOne(groupId: string) {
+    setVerifyingOne(groupId);
+    setError(null);
+    try {
+      await apiSend(`/api/v1/gaps/${encodeURIComponent(groupId)}/verify`, "POST");
+      await mutate();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Verification failed");
+    } finally {
+      setVerifyingOne(null);
+    }
+  }
+
+  async function setStatus(groupId: string, status: string) {
+    setError(null);
+    try {
+      await apiSend(`/api/v1/gaps/${encodeURIComponent(groupId)}/status`, "POST", { status });
+      await mutate();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not update the record");
+    }
+  }
+
   // The point of this page is the message that gets sent to whoever owns the data, so
-  // the report is generated in the exact shape it would be pasted into an email. The
-  // needs-review set is deliberately absent: nobody can add a record for "curva
-  // glicemica" with no attribute, and asking them to wastes their time.
-  function reportText(d: KnowledgeGaps) {
+  // the report is generated in the exact shape it would be pasted into an email.
+  //
+  // ONLY VERIFIED, UNSENT RECORDS GO IN. A line nobody checked is a guess, and one
+  // already sent is a record the customer is working on — repeating it wastes their time
+  // and costs us their trust in the list. The needs-review set is absent for a third
+  // reason: nobody can add a record for "curva glicemica" with no attribute.
+  function reportText(d: KnowledgeGaps, rows: KnowledgeGap[]) {
     const lines = [
       `Missing information — last ${d.window_days} days`,
       "",
       `${d.calls_with_gaps} of ${d.calls_scanned} calls reached a question we could not answer`,
       "because the information is not in the system.",
       "",
-      "Adding the following would let the assistant answer these calls itself:",
+      "Each of the following was re-checked against the lookup service before being listed:",
+      "the question was asked again, in several wordings, and nothing came back.",
+      "",
+      "Adding these would let the assistant answer these calls itself:",
       "",
     ];
-    d.groups.forEach((g, i) => {
+    rows.forEach((g, i) => {
       lines.push(`${i + 1}. ${g.question}`);
-      lines.push(
-        `   asked ${g.count}x · ${g.transferred} transferred to an operator`
-      );
+      lines.push(`   asked ${g.count}x · ${g.transferred} transferred to an operator`);
       (g.variants ?? [])
         .filter((v) => v !== g.question)
         .forEach((v) => lines.push(`   also asked as: "${v}"`));
@@ -145,9 +273,22 @@ export default function GapsPage() {
 
   async function copyReport() {
     if (!data) return;
-    await navigator.clipboard.writeText(reportText(data));
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    await navigator.clipboard.writeText(reportText(data, sendable));
+    // Copying stores nothing on purpose: you can copy the report, read it, and decide not
+    // to send it. Marking is a separate press, offered right here so it is hard to forget.
+    setCopied(sendable.map((g) => g.group_id!).filter(Boolean));
+  }
+
+  async function markSent() {
+    if (!copied?.length) return;
+    try {
+      await apiSend("/api/v1/gaps/mark-sent", "POST", { group_ids: copied });
+      setCopied(null);
+      setNotice(`Marked ${copied.length} record${copied.length === 1 ? "" : "s"} as sent.`);
+      await mutate();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not mark them as sent");
+    }
   }
 
   const pct = data?.gap_call_rate == null ? null : Math.round(data.gap_call_rate * 100);
@@ -176,6 +317,7 @@ export default function GapsPage() {
           <option value="7">Last 7 days</option>
           <option value="30">Last 30 days</option>
           <option value="90">Last 90 days</option>
+          <option value="365">Last year</option>
         </select>
         {hasGrouping && (
           <select
@@ -201,12 +343,27 @@ export default function GapsPage() {
                 : `Group duplicates (${data.ungrouped_count})`}
             </button>
           )}
-          {data && data.groups.length > 0 && (
+          {verifiable.length > 0 && (
+            <button
+              onClick={askPlan}
+              disabled={planning || running || !!verifyBlocked}
+              className="rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm font-medium text-zinc-200 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-50"
+              title={
+                verifyBlocked ??
+                "Re-ask the lookup API about every record nobody has checked"
+              }
+            >
+              {planning
+                ? "Checking…"
+                : `Verify unchecked (${checkable.length || verifiable.length})`}
+            </button>
+          )}
+          {sendable.length > 0 && (
             <button
               onClick={copyReport}
               className="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500"
             >
-              {copied ? "Copied ✓" : "Copy report for email"}
+              Copy report ({sendable.length})
             </button>
           )}
         </div>
@@ -215,6 +372,135 @@ export default function GapsPage() {
       {error && (
         <div className="rounded-lg border border-red-900/60 bg-red-950/30 p-3 text-sm text-red-300">
           {error}
+        </div>
+      )}
+      {notice && (
+        <div className="rounded-lg border border-emerald-900/60 bg-emerald-950/20 p-3 text-sm text-emerald-300">
+          {notice}
+        </div>
+      )}
+
+      {/* Copying stores nothing, so this is the only thing that takes a record off the
+          list. Shown right after the copy so it is hard to forget, and never automatic so
+          a report you decided not to send does not disappear from the next one. */}
+      {copied && copied.length > 0 && (
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-indigo-900/60 bg-indigo-950/20 p-3 text-sm text-indigo-200">
+          <span>
+            {copied.length} record{copied.length === 1 ? "" : "s"} copied. Nothing has
+            changed yet — mark them as sent once the email has actually gone out, and they
+            will stay off every future report.
+          </span>
+          <button
+            onClick={markSent}
+            className="ml-auto rounded-lg bg-indigo-600 px-3 py-1 text-sm font-medium text-white hover:bg-indigo-500"
+          >
+            Mark these {copied.length} as sent
+          </button>
+          <button
+            onClick={() => setCopied(null)}
+            className="rounded-lg border border-indigo-800 px-3 py-1 text-sm text-indigo-300 hover:bg-indigo-900/40"
+          >
+            Not yet
+          </button>
+        </div>
+      )}
+
+      {/* Every one of these requests lands on the customer's own live service, which also
+          answers phone calls and has no rate limiting. So the number is shown before it is
+          spent, not after. */}
+      {plan && (
+        <div className="space-y-2 rounded-lg border border-amber-900/60 bg-amber-950/20 p-3 text-sm text-amber-200">
+          <div>
+            This will re-ask <strong>{plan.groups}</strong> record
+            {plan.groups === 1 ? "" : "s"} — about <strong>{plan.requests}</strong> requests
+            to {plan.sources.join(" and ") || "the configured sources"}, plus two LLM calls
+            per record on our side.
+          </div>
+          <div className="text-xs text-amber-300/80">
+            That service also answers live phone calls and has no rate limiting, so the run
+            goes two requests at a time and takes roughly{" "}
+            {Math.max(1, Math.round((plan.groups * 45) / 60))} minute
+            {Math.round((plan.groups * 45) / 60) === 1 ? "" : "s"}. It keeps running if you
+            leave the page.
+          </div>
+          {Object.keys(plan.unroutable).length > 0 && (
+            <div className="text-xs text-amber-400">
+              Skipping{" "}
+              {Object.entries(plan.unroutable)
+                .map(([a, n]) => `${n} in ${a}`)
+                .join(", ")}{" "}
+              — no lookup source is configured for those regions.
+            </div>
+          )}
+          <div className="flex gap-2 pt-1">
+            <button
+              onClick={startRun}
+              disabled={plan.groups === 0}
+              className="rounded-lg bg-amber-600 px-3 py-1 text-sm font-medium text-white hover:bg-amber-500 disabled:opacity-40"
+            >
+              Run it
+            </button>
+            <button
+              onClick={() => setPlan(null)}
+              className="rounded-lg border border-amber-800 px-3 py-1 text-sm text-amber-300 hover:bg-amber-900/30"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {run?.running && (
+        <div className="rounded-lg border border-indigo-900/60 bg-indigo-950/20 p-3 text-sm text-indigo-300">
+          Verifying {run.done} of {run.total}… This keeps running on the server if you
+          leave the page. Only one run happens at a time, to keep the load on the lookup
+          API bounded.
+          <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-indigo-950">
+            <div
+              className="h-full bg-indigo-500 transition-all"
+              style={{ width: `${run.total ? (run.done / run.total) * 100 : 0}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      {run && !run.running && run.finished_at && Object.keys(run.verdicts).length > 0 && (
+        <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-3 text-sm text-zinc-400">
+          Last run checked {run.done} record{run.done === 1 ? "" : "s"}:{" "}
+          {Object.entries(run.verdicts)
+            .map(([v, n]) => `${n} ${v.replace(/_/g, " ")}`)
+            .join(", ")}
+          .{run.error && <span className="text-amber-400"> {run.error}</span>}
+        </div>
+      )}
+
+      {/* Why the Verify buttons are greyed out. Said in the page rather than in a tooltip:
+          the two reasons need opposite actions, and a disabled button with no explanation
+          reads as "this feature is not here". */}
+      {!backendHasVerification && (
+        <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-3 text-sm text-zinc-400">
+          <strong className="font-medium text-zinc-300">
+            Verification is not available on this backend.
+          </strong>{" "}
+          This dashboard can verify missing records against the lookup API, but the server
+          it is reading is an older build that has no{" "}
+          <code className="text-zinc-500">/api/v1/gaps</code> endpoints. Deploy the server,
+          or point <code className="text-zinc-500">CALLHARNESS_API_URL</code> at one that
+          has them. Everything else on this page works as before.
+        </div>
+      )}
+
+      {probesMissing && (
+        <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-3 text-sm text-zinc-400">
+          <strong className="font-medium text-zinc-300">
+            No lookup source is configured
+          </strong>{" "}
+          for {[...new Set(groups.filter((g) => g.grouped && g.probes_configured === 0).map((g) => g.agent_id ?? "this region"))].join(", ")}
+          , so those records cannot be verified — only assumed. There is no default here: a
+          knowledge-base URL belongs to one deployment.{" "}
+          <Link href="/settings" className="text-indigo-400 hover:text-indigo-300">
+            Add one in Analysis Settings →
+          </Link>
         </div>
       )}
 
@@ -285,28 +571,90 @@ export default function GapsPage() {
                 {hasGrouping ? "records to add" : "not merged yet"}
               </div>
             </div>
+            {/* Replaces the old "transfers caused" tile: once records can be verified, how
+                many are actually PROVEN is the number that decides what gets sent. */}
             <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
               <div className="text-xs uppercase tracking-wide text-zinc-500">
-                Transfers caused
+                Verified missing
               </div>
               <div className="mt-1 text-2xl font-semibold tabular-nums text-zinc-100">
-                {data.groups.reduce((n, g) => n + g.transferred, 0)}
+                {sendable.length}
               </div>
-              <div className="mt-1 text-xs text-zinc-500">avoidable by adding data</div>
+              <div className="mt-1 text-xs text-zinc-500">
+                ready to report · {byStatus("not_verified").length} unchecked
+              </div>
             </div>
           </div>
 
-          {data.groups.length === 0 ? (
+          {open.length === 0 ? (
             <div className="rounded-xl border border-emerald-900/50 bg-emerald-950/20 p-6 text-center text-sm text-emerald-300">
-              No missing information found in this window.
+              Nothing left to check or report in this window.
             </div>
           ) : (
             <ol className="space-y-2">
-              {data.groups.map((g, i) => (
-                <GapRow key={g.group_id ?? g.examples[0]?.call_id ?? i} gap={g} index={i} onUngroup={ungroup} />
+              {open.map((g, i) => (
+                <GapRow
+                  key={g.group_id ?? g.examples[0]?.call_id ?? i}
+                  gap={g}
+                  index={i}
+                  busy={verifyingOne === g.group_id}
+                  disabled={running || verifyingOne !== null}
+                  backendReady={backendHasVerification}
+                  onUngroup={ungroup}
+                  onVerify={verifyOne}
+                  onStatus={setStatus}
+                />
               ))}
             </ol>
           )}
+
+          <GapSection
+            title="Found in the source — our lookup failed"
+            blurb="The record IS in the database; retrieval missed it on the call. These are engineering bugs on our side, not records for the customer to add, so they are kept out of the report."
+            rows={byStatus("found_in_source")}
+            onUngroup={ungroup}
+            onVerify={verifyOne}
+            onStatus={setStatus}
+            busy={verifyingOne}
+            disabled={running || verifyingOne !== null}
+            backendReady={backendHasVerification}
+          />
+
+          <GapSection
+            title="Sent — waiting on the customer"
+            blurb="Already reported. Re-checking one is how you find out whether it has been added yet: if the record turns up, it moves to “Added — confirmed”. If it is still missing it stays here rather than rejoining the report, so the same list is never sent twice."
+            rows={byStatus("sent")}
+            onUngroup={ungroup}
+            onVerify={verifyOne}
+            onStatus={setStatus}
+            busy={verifyingOne}
+            disabled={running || verifyingOne !== null}
+            backendReady={backendHasVerification}
+          />
+
+          <GapSection
+            title="Added"
+            blurb="The record is in the database now. “Added — confirmed” means we asked the source again and it answered; “not re-checked” means somebody marked it by hand and nothing has been proved yet."
+            rows={byStatus("added", "added_confirmed")}
+            onUngroup={ungroup}
+            onVerify={verifyOne}
+            onStatus={setStatus}
+            busy={verifyingOne}
+            disabled={running || verifyingOne !== null}
+            backendReady={backendHasVerification}
+          />
+
+          <GapSection
+            title="Question not usable"
+            blurb="The question was built from mis-heard speech, so it came back empty because it is nonsense rather than because the data is absent. Nobody can add a record for it — open the call and listen."
+            rows={byStatus("bad_question")}
+            onUngroup={ungroup}
+            onVerify={verifyOne}
+            onStatus={setStatus}
+            busy={verifyingOne}
+            disabled={running || verifyingOne !== null}
+            backendReady={backendHasVerification}
+          />
 
           {data.needs_review.length > 0 && (
             <div className="space-y-2 pt-2">
@@ -318,8 +666,8 @@ export default function GapsPage() {
                   Nobody can add a record for these — the question was mis-heard, names a
                   subject without saying what was wanted about it, or is a search string
                   the software generated rather than something a caller said. They are
-                  kept out of the report and its counts; open the calls to see what was
-                  really asked.
+                  kept out of the report and its counts, and cannot be verified; open the
+                  calls to see what was really asked.
                 </p>
               </div>
               <ul className="space-y-1.5">
@@ -352,17 +700,98 @@ export default function GapsPage() {
   );
 }
 
+/** A collapsed-by-default group of rows that are no longer part of the working list.
+ *  Kept on the page rather than hidden: "we checked and it was there" is a finding, and
+ *  "we sent it last Tuesday" is what stops it being sent again. */
+function GapSection({
+  title,
+  blurb,
+  rows,
+  ...handlers
+}: {
+  title: string;
+  blurb: string;
+  rows: KnowledgeGap[];
+  busy: string | null;
+  disabled: boolean;
+  backendReady: boolean;
+  onUngroup: (id: string) => void;
+  onVerify: (id: string) => void;
+  onStatus: (id: string, status: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  if (rows.length === 0) return null;
+  return (
+    <div className="space-y-2 pt-2">
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex w-full items-baseline gap-2 text-left"
+      >
+        <span className="text-sm font-semibold text-zinc-300">
+          {title} ({rows.length})
+        </span>
+        <span className="text-xs text-zinc-600">{open ? "hide" : "show"}</span>
+      </button>
+      {open && (
+        <>
+          <p className="max-w-3xl text-xs text-zinc-500">{blurb}</p>
+          <ol className="space-y-2">
+            {rows.map((g, i) => (
+              <GapRow
+                key={g.group_id ?? g.examples[0]?.call_id ?? i}
+                gap={g}
+                index={i}
+                busy={handlers.busy === g.group_id}
+                disabled={handlers.disabled}
+                backendReady={handlers.backendReady}
+                onUngroup={handlers.onUngroup}
+                onVerify={handlers.onVerify}
+                onStatus={handlers.onStatus}
+              />
+            ))}
+          </ol>
+        </>
+      )}
+    </div>
+  );
+}
+
 function GapRow({
   gap,
   index,
+  busy,
+  disabled,
+  backendReady,
   onUngroup,
+  onVerify,
+  onStatus,
 }: {
   gap: KnowledgeGap;
   index: number;
+  busy: boolean;
+  disabled: boolean;
+  // False when the API this page is reading predates verification. The button is hidden
+  // rather than disabled-with-a-reason, because every reason it could give would name the
+  // wrong cause; the page-level banner says what is actually wrong.
+  backendReady: boolean;
   onUngroup: (groupId: string) => void;
+  onVerify: (groupId: string) => void;
+  onStatus: (groupId: string, status: string) => void;
 }) {
+  const [showEvidence, setShowEvidence] = useState(false);
   const others = (gap.variants ?? []).filter((v) => v !== gap.question);
   const examples = gap.examples ?? [];
+  const canVerify = gap.grouped && !!gap.group_id && gap.probes_configured > 0;
+
+  // Fetched only when the panel is opened. The list endpoint already re-renders on every
+  // filter change, and an eager fetch per row would multiply that by the page length.
+  const { data: history } = useSWR<GapVerification[]>(
+    showEvidence && gap.group_id
+      ? `/api/v1/gaps/${encodeURIComponent(gap.group_id)}/verifications`
+      : null,
+    fetcher
+  );
+
   return (
     <li className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
@@ -378,19 +807,89 @@ function GapRow({
             {gap.transferred} transferred
           </span>
         )}
-        {/* Grouping never re-judges a call it has already placed, so this is the only
-            way to undo a wrong merge. It costs nothing — the calls simply return to the
-            ungrouped pool for the next pass. */}
-        {gap.grouped && gap.count > 1 && gap.group_id && (
-          <button
-            onClick={() => onUngroup(gap.group_id!)}
-            className="rounded-full border border-zinc-700 px-2 py-0.5 text-xs text-zinc-500 hover:border-zinc-600 hover:text-zinc-300"
-            title="Split this back into separate questions"
-          >
-            ungroup
-          </button>
-        )}
+        <GapStatusBadge status={gap.status} note={gap.status_note} />
       </div>
+
+      {/* WHETHER THIS ROW HAS BEEN THROUGH GROUPING. Without it a group of one and a call
+          nobody has grouped look identical — same single question, same single call id —
+          and only the first of those is a finished judgement. Verification is deliberately
+          limited to grouped records, so the page has to say which is which. */}
+      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+        {gap.grouped ? (
+          <span className="text-zinc-600" title="The grouping pass has placed this record">
+            ✓ grouped
+          </span>
+        ) : (
+          <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-amber-400/90">
+            not grouped yet
+          </span>
+        )}
+        {gap.sent_batch && <span className="text-zinc-600">· {gap.sent_batch}</span>}
+
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          {gap.status !== "not_verified" && gap.group_id && (
+            <button
+              onClick={() => setShowEvidence(!showEvidence)}
+              className="rounded-full border border-zinc-700 px-2 py-0.5 text-zinc-500 hover:border-zinc-600 hover:text-zinc-300"
+            >
+              {showEvidence ? "hide evidence" : "evidence"}
+            </button>
+          )}
+          {gap.status === "sent" && gap.group_id && (
+            <button
+              onClick={() => onStatus(gap.group_id!, "added")}
+              className="rounded-full border border-lime-800 px-2 py-0.5 text-lime-400/90 hover:bg-lime-950/40"
+              title="The customer says they have added it. Verify afterwards to prove it."
+            >
+              mark added
+            </button>
+          )}
+          {backendReady && (
+          <button
+            onClick={() => canVerify && onVerify(gap.group_id!)}
+            disabled={!canVerify || disabled}
+            className={`rounded-full border px-2 py-0.5 disabled:cursor-not-allowed ${
+              canVerify
+                ? "border-indigo-800 bg-indigo-500/10 text-indigo-300 hover:bg-indigo-500/20 disabled:opacity-40"
+                : "border-zinc-800 text-zinc-600 opacity-70"
+            }`}
+            title={
+              !gap.grouped
+                ? "Run Group duplicates first: an ungrouped question has not been checked for duplicates, so verifying it may re-ask a record another row already covers."
+                : gap.probes_configured === 0
+                  ? `No lookup source is configured for ${gap.agent_id ?? "this region"}. Add one in Analysis Settings.`
+                  : "Ask the lookup API again, in several wordings"
+            }
+          >
+            {busy
+              ? "checking…"
+              : !gap.grouped
+                ? "verify — group it first"
+                : gap.probes_configured === 0
+                  ? "verify — no source configured"
+                  : gap.status === "not_verified"
+                    ? "verify"
+                    : "re-check"}
+          </button>
+          )}
+          {/* Grouping never re-judges a call it has already placed, so this is the only
+              way to undo a wrong merge. The verdict goes with the record: the members come
+              back unverified, and the evidence stays on each call. */}
+          {gap.grouped && gap.count > 1 && gap.group_id && (
+            <button
+              onClick={() => onUngroup(gap.group_id!)}
+              className="rounded-full border border-zinc-700 px-2 py-0.5 text-zinc-500 hover:border-zinc-600 hover:text-zinc-300"
+              title="Split this back into separate questions. Its verification is discarded with it."
+            >
+              ungroup
+            </button>
+          )}
+        </div>
+      </div>
+
+      {gap.status_note && (
+        <p className="mt-2 text-xs text-zinc-400">{gap.status_note}</p>
+      )}
 
       {others.length > 0 && (
         <div className="mt-2 text-xs text-zinc-500">
@@ -417,6 +916,70 @@ function GapRow({
         ))}
         <span className="text-zinc-600">· lookup: {gap.tool}</span>
       </div>
+
+      {showEvidence && <Evidence history={history} />}
     </li>
+  );
+}
+
+/** Exactly what was sent and exactly what came back, per attempt.
+ *
+ *  Shown in full rather than summarised. A verdict about somebody else's database that
+ *  cannot be inspected is a verdict nobody should act on — and the common failure here is
+ *  a reply that reads confident and answers a different question, which only a human
+ *  reading the text can catch. */
+function Evidence({ history }: { history: GapVerification[] | undefined }) {
+  if (!history) return <p className="mt-3 text-xs text-zinc-600">Loading evidence…</p>;
+  if (history.length === 0)
+    return <p className="mt-3 text-xs text-zinc-600">No verification runs recorded.</p>;
+
+  return (
+    <div className="mt-3 space-y-3 border-t border-zinc-800 pt-3">
+      {history.map((run) => (
+        <div key={run.id} className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-500">
+            <GapStatusBadge status={run.verdict} />
+            <span>{formatDate(run.created_at)}</span>
+            {run.date_meant && run.date_probed && run.date_meant !== run.date_probed && (
+              <span className="text-amber-400/90">
+                asked about {run.date_probed}, caller meant {run.date_meant} (already past)
+              </span>
+            )}
+          </div>
+          {run.question_note && <p className="text-xs text-zinc-400">{run.question_note}</p>}
+          <div className="space-y-1.5">
+            {run.probes.map((p, i) => (
+              <div key={i} className="rounded border border-zinc-800 bg-zinc-950/50 p-2 text-xs">
+                <div className="flex flex-wrap items-center gap-x-2 text-zinc-500">
+                  <span
+                    className={
+                      p.verdict === "ok"
+                        ? "text-emerald-400"
+                        : p.verdict === "empty"
+                          ? "text-amber-400"
+                          : "text-red-400"
+                    }
+                  >
+                    {p.verdict === "ok"
+                      ? "answered"
+                      : p.verdict === "empty"
+                        ? "nothing found"
+                        : "failed"}
+                  </span>
+                  <span>{p.probe_label}</span>
+                  <span className="text-zinc-600">{p.variant_kind}</span>
+                  {p.http_status != null && <span className="text-zinc-600">HTTP {p.http_status}</span>}
+                  {p.ms != null && <span className="text-zinc-600">{p.ms}ms</span>}
+                </div>
+                <div className="mt-1 text-zinc-300">&ldquo;{p.variant}&rdquo;</div>
+                <div className="mt-1 whitespace-pre-wrap break-words text-zinc-500">
+                  {p.response}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }

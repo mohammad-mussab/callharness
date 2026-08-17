@@ -12,7 +12,8 @@ from ..analysis.translate import translate_call
 from ..auth import require_api_key
 from ..config import settings
 from ..db import get_session
-from ..models import Call, Turn
+from ..gap_grouping import GAP_NEEDS_REVIEW
+from ..models import Call, GapGroup, Turn
 from ..quality import compute_quality
 from ..schemas import (
     CallCreate,
@@ -228,6 +229,14 @@ async def get_call(call_id: str, session: AsyncSession = Depends(get_session)):
     out.evaluations = [
         EvaluationResultOut.model_validate(r) for r in call.evaluation_results
     ]
+    # Whether anybody has re-asked the lookup API about this call's missing record.
+    # Read from the group it belongs to, not from the call: verification is about the
+    # record, and several calls share one. See gap_verification.py.
+    if call.gap_group_id and call.gap_group_id != GAP_NEEDS_REVIEW:
+        group = await session.get(GapGroup, call.gap_group_id)
+        if group is not None:
+            out.gap_status = group.status or None
+            out.gap_status_note = group.status_note
     return out
 
 

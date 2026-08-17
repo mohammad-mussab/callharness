@@ -7,6 +7,7 @@ import { fetcher, textFetcher, type CallDetail } from "@/lib/api";
 import { formatClock, formatDate, formatDuration, titleCase } from "@/lib/format";
 import {
   BucketBadge,
+  GapStatusBadge,
   OutcomeBadge,
   SentimentBadge,
   StatusBadge,
@@ -245,6 +246,23 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
                     <p className="mt-0.5 font-mono text-xs text-amber-200">
                       {call.unanswered_query}
                     </p>
+                    {/* Whether anyone has actually asked the source again. Shown right
+                        under the query because the two belong together: the query alone
+                        is a claim, and this is whether it was checked. The verdict is
+                        about the RECORD this call was grouped into, not about this call
+                        on its own — several calls can share one. */}
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <GapStatusBadge status={call.gap_status} note={call.gap_status_note} />
+                      <Link
+                        href="/gaps"
+                        className="text-xs text-indigo-400 hover:text-indigo-300"
+                      >
+                        Missing Information →
+                      </Link>
+                    </div>
+                    {call.gap_status_note && (
+                      <p className="mt-1.5 text-xs text-zinc-400">{call.gap_status_note}</p>
+                    )}
                   </div>
                 )}
               </div>

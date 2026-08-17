@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .analysis.worker import run_worker
 from .config import settings
 from .db import init_db
-from .routes import alerts, analytics, calls, config, evaluators
+from .routes import alerts, analytics, calls, config, evaluators, gaps
 from .schemas import HealthOut
 
 VERSION = "0.3.0"
@@ -42,6 +42,7 @@ app.add_middleware(
 
 app.include_router(calls.router)
 app.include_router(analytics.router)
+app.include_router(gaps.router)
 app.include_router(config.router)
 app.include_router(alerts.router)
 app.include_router(evaluators.router)

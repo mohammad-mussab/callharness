@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from typing import Any, Literal
 
@@ -102,6 +103,10 @@ class CallOut(BaseModel):
     bucket: str | None = None
     issue_note: str | None = None
     unanswered_query: str | None = None
+    # Which missing record this call was merged into by the grouping pass, and the
+    # canonical wording of that record. Null until it has been grouped.
+    gap_group_id: str | None = None
+    gap_group_question: str | None = None
     # Superseded by `bucket`, kept so historical values stay visible and queryable.
     transfer_reason: str | None = None
     non_completion_reason: str | None = None
@@ -135,6 +140,11 @@ class EvaluationResultOut(BaseModel):
 class CallDetailOut(CallOut):
     turns: list[TurnOut] = Field(default_factory=list)
     evaluations: list[EvaluationResultOut] = Field(default_factory=list)
+    # How far this call's missing record has got towards being fixed. Read from the
+    # GapGroup it belongs to, not from the call — verification is about the record, and
+    # several calls share one. Filled in by the route; null when ungrouped or unverified.
+    gap_status: str | None = None
+    gap_status_note: str | None = None
 
 
 class CallListOut(BaseModel):
@@ -172,6 +182,63 @@ class ReasonCategory(BaseModel):
         return key
 
 
+class LookupProbe(BaseModel):
+    """One knowledge source a "missing record" question can be re-asked against.
+
+    Generic on purpose: a URL, a request body with {{query}} in it, and where to find the
+    answer in the reply. That covers the VAPI-envelope endpoints the Italian healthcare
+    agents use without naming them, and covers a plain REST lookup too — so nothing
+    customer-specific has to live in the code.
+    """
+
+    key: str = Field(min_length=1, max_length=32)
+    label: str = ""
+    url: str = Field(min_length=1, max_length=1024)
+    method: Literal["POST", "GET", "PUT"] = "POST"
+    headers: dict[str, str] = Field(default_factory=dict)
+    # Must contain {{query}}. The substitution is JSON-escaped, so an Italian question
+    # with an apostrophe cannot break the body.
+    body_template: str = Field(min_length=1)
+    # Dotted path into the response, e.g. "results.0.result". Empty means the whole body.
+    result_path: str = ""
+    enabled: bool = True
+
+    # WHICH REGIONS THIS SOURCE SERVES. Empty means every region, so a single-region
+    # install needs no extra setup.
+    #
+    # This is not a convenience filter. These backends dispatch on a region-specific tool
+    # name inside the request body and answer an unrecognised one with 200 OK and the
+    # plain sentence "Tool non supportato: <name>". Sending a Lazio question to Piemonte's
+    # /query_new returns exactly that — and read as data it becomes "this record is
+    # missing from your database", for every single gap, with an evidence trail that looks
+    # correct. So a call is never probed by a source that does not list its agent_id.
+    agent_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("key")
+    @classmethod
+    def _normalize_key(cls, v: str) -> str:
+        key = normalize_key(v)
+        if not key:
+            raise ValueError("key must contain at least one non-space character")
+        return key
+
+    @field_validator("body_template")
+    @classmethod
+    def _must_carry_query(cls, v: str) -> str:
+        # Both caught on save rather than at probe time. A template without the
+        # placeholder sends the same fixed request for every question, so every answer
+        # would be recorded against the wrong gap; one that is not valid JSON fails on
+        # every record in a sweep. Either way the failure is in the config, and the person
+        # who can fix it is the one pressing Save.
+        if "{{query}}" not in v:
+            raise ValueError("body_template must contain {{query}}")
+        try:
+            json.loads(v)
+        except ValueError as exc:
+            raise ValueError(f"body_template is not valid JSON: {exc}") from exc
+        return v
+
+
 class AnalysisConfigIn(BaseModel):
     summary_enabled: bool = True
     summary_prompt: str | None = None
@@ -191,6 +258,10 @@ class AnalysisConfigIn(BaseModel):
     classification_enabled: bool = True
     transfer_reasons: list[ReasonCategory] = Field(default_factory=list)
     non_completion_reasons: list[ReasonCategory] = Field(default_factory=list)
+    # Where to re-ask a missing-record question. Unlike the taxonomies above, an empty
+    # list means exactly that — there is no universal default for somebody else's
+    # knowledge base, so an unconfigured install simply cannot verify.
+    lookup_probes: list[LookupProbe] = Field(default_factory=list)
 
 
 class AnalysisConfigOut(AnalysisConfigIn):
@@ -299,6 +370,20 @@ class KnowledgeGapOut(BaseModel):
     grouped: bool = False
     needs_review: bool = False
 
+    # Whether anyone has re-asked the lookup API about this record, and what came back —
+    # read from the GapGroup row (gap_verification.py). `status` is null until somebody
+    # verifies it; a row can only be reported to the customer once it says
+    # "confirmed_missing" and `sent_batch` is still null.
+    status: str | None = None
+    status_at: datetime | None = None
+    status_note: str | None = None
+    sent_batch: str | None = None
+    # The region whose lookup sources this record would be checked against, and whether
+    # any are configured for it. Surfaced so the page can explain a disabled Verify button
+    # rather than failing when it is pressed.
+    agent_id: str | None = None
+    probes_configured: int = 0
+
 
 class KnowledgeGapsOut(BaseModel):
     window_days: int
@@ -339,6 +424,117 @@ class GapGroupingOut(BaseModel):
 class GapUngroupOut(BaseModel):
     group_id: str
     calls_released: int
+
+
+# ---------------------------------------------------------------------------
+# Missing-record verification (gap_verification.py)
+# ---------------------------------------------------------------------------
+
+
+class ProbeAttemptOut(BaseModel):
+    """One request to one source with one wording of the question.
+
+    Every field is shown on the page. A verdict about somebody's data that cannot be
+    inspected is a verdict nobody should act on, and "which exact sentence did you send,
+    and what came back" is the whole of the inspection.
+    """
+
+    probe_key: str
+    probe_label: str
+    variant: str
+    variant_kind: str  # canonical | paraphrase | corrected | dated | test
+    url: str | None = None
+    http_status: int | None = None
+    ms: int | None = None
+    response: str | None = None
+    verdict: str  # ok | empty | error
+
+
+class GapVerificationOut(BaseModel):
+    id: str
+    created_at: datetime
+    verdict: str
+    group_id: str | None = None
+    call_id: str
+    question_original: str | None
+    question_resolved: str | None
+    # Differ when the caller's day had already passed and a same-weekday substitute was
+    # used instead — an empty answer about a day that is over proves nothing.
+    date_meant: str | None
+    date_probed: str | None
+    question_note: str | None
+    llm_model: str | None
+    probes: list[ProbeAttemptOut] = Field(default_factory=list)
+
+    model_config = {"from_attributes": True}
+
+
+class GapStatusIn(BaseModel):
+    """A decision a person made, rather than one a probe produced."""
+
+    status: str
+    note: str | None = None
+
+
+class GapGroupIdsIn(BaseModel):
+    group_ids: list[str] = Field(default_factory=list)
+
+
+class GapGroupStatusOut(BaseModel):
+    group_id: str
+    status: str
+    status_at: datetime | None = None
+    status_note: str | None = None
+    sent_batch: str | None = None
+
+
+class GapVerifyIn(BaseModel):
+    """What to include in a batch run. Explicit ids win over the filters."""
+
+    group_ids: list[str] = Field(default_factory=list)
+    agent_id: str | None = None
+    days: int = 30
+    # Which statuses to (re-)check. Defaults to the ones nobody has looked at plus the
+    # ones that failed for a reason that may have gone away.
+    statuses: list[str] = Field(default_factory=list)
+    limit: int = Field(default=50, ge=1, le=500)
+
+
+class GapVerifyRunOut(BaseModel):
+    """Progress of the single in-flight batch. One run at a time, by design: the limit
+    exists to cap load on somebody else's production service, not to simplify the code."""
+
+    running: bool
+    total: int = 0
+    done: int = 0
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    current_group_id: str | None = None
+    verdicts: dict[str, int] = Field(default_factory=dict)
+    error: str | None = None
+
+
+class GapVerifyPlanOut(BaseModel):
+    """What a run would cost, before anything is spent.
+
+    Every probe lands on the customer's live service — the same instance answering phone
+    calls — and on our own LLM key. So the page asks first, and this is what it asks with.
+    """
+
+    groups: int
+    requests: int  # upper bound: variants x sources, summed over the groups
+    sources: list[str] = Field(default_factory=list)
+    # Records that cannot be checked because no source is configured for their region.
+    unroutable: dict[str, int] = Field(default_factory=dict)
+
+
+class ProbeTestIn(BaseModel):
+    probe: LookupProbe
+    query: str = Field(min_length=1, max_length=500)
+
+
+class ProbeTestOut(BaseModel):
+    attempt: ProbeAttemptOut
 
 
 class TimeseriesPoint(BaseModel):

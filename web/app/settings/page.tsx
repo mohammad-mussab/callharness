@@ -3,9 +3,13 @@
 import { useEffect, useState } from "react";
 import useSWR from "swr";
 import {
+  apiSend,
   fetcher,
   type AnalysisConfig,
   type ExtractionField,
+  type LookupProbe,
+  type Overview,
+  type ProbeAttempt,
   type ReasonCategory,
 } from "@/lib/api";
 
@@ -94,8 +98,251 @@ function TaxonomyEditor({
   );
 }
 
+/** A blank probe, pre-filled with the VAPI envelope shape so the JSON is not written
+ *  from scratch. The URL and the tool name are left empty on purpose — those are the
+ *  two fields that must be got right, and a plausible-looking wrong default is worse
+ *  than an empty one. */
+function blankProbe(): LookupProbe {
+  return {
+    key: "",
+    label: "",
+    url: "",
+    method: "POST",
+    headers: {},
+    body_template: JSON.stringify(
+      {
+        message: {
+          toolCallList: [
+            {
+              id: "callharness-verify",
+              function: { name: "", arguments: '{"query": "{{query}}"}' },
+            },
+          ],
+        },
+      },
+      null,
+      2
+    ),
+    result_path: "results.0.result",
+    enabled: true,
+    agent_ids: [],
+  };
+}
+
+function ProbeEditor({
+  probes,
+  agents,
+  onChange,
+}: {
+  probes: LookupProbe[];
+  agents: string[];
+  onChange: (next: LookupProbe[]) => void;
+}) {
+  const [tested, setTested] = useState<Record<number, ProbeAttempt | string>>({});
+  const [testing, setTesting] = useState<number | null>(null);
+  const [query, setQuery] = useState("");
+
+  const setRow = (i: number, patch: Partial<LookupProbe>) =>
+    onChange(probes.map((p, j) => (j === i ? { ...p, ...patch } : p)));
+
+  function toggleAgent(i: number, agent: string) {
+    const current = probes[i].agent_ids ?? [];
+    setRow(i, {
+      agent_ids: current.includes(agent)
+        ? current.filter((a) => a !== agent)
+        : [...current, agent],
+    });
+  }
+
+  async function test(i: number) {
+    setTesting(i);
+    try {
+      const res = await apiSend("/api/v1/gaps/probe-test", "POST", {
+        probe: probes[i],
+        query: query || "orari di apertura",
+      });
+      setTested({ ...tested, [i]: (res as { attempt: ProbeAttempt }).attempt });
+    } catch (e) {
+      setTested({ ...tested, [i]: e instanceof Error ? e.message : "Request failed" });
+    } finally {
+      setTesting(null);
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <div className="text-sm font-medium text-zinc-200">Lookup probes</div>
+          <p className="text-sm text-zinc-500">
+            Where a missing-record question gets re-asked, to find out whether the record
+            is genuinely absent or the lookup simply missed it. List every knowledge source
+            the agent uses — each question is sent to all of them for its region, which is
+            what settles a call where one tool deferred to another and the agent never
+            followed up.
+          </p>
+        </div>
+        <button
+          onClick={() => onChange([...probes, blankProbe()])}
+          className="shrink-0 rounded-lg border border-zinc-700 px-3 py-1 text-sm text-zinc-300 hover:bg-zinc-800"
+        >
+          + Add source
+        </button>
+      </div>
+
+      {probes.length === 0 && (
+        <p className="text-sm text-zinc-500">
+          None configured. There is no default here — a knowledge-base URL belongs to one
+          deployment — so verification stays off and every missing record stays
+          &ldquo;Not checked&rdquo; until a source is added.
+        </p>
+      )}
+
+      {probes.map((probe, i) => {
+        const result = tested[i];
+        const regions = probe.agent_ids ?? [];
+        return (
+          <div key={i} className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950/40 p-3">
+            <div className="grid grid-cols-12 items-center gap-2">
+              <input
+                value={probe.key}
+                onChange={(e) => setRow(i, { key: e.target.value })}
+                placeholder="rag"
+                className={`${inputClass} col-span-2 font-mono text-xs`}
+              />
+              <input
+                value={probe.label}
+                onChange={(e) => setRow(i, { label: e.target.value })}
+                placeholder="Knowledge base (RAG)"
+                className={`${inputClass} col-span-4`}
+              />
+              <input
+                value={probe.url}
+                onChange={(e) => setRow(i, { url: e.target.value })}
+                placeholder="https://…/lazio/rag_lazio"
+                className={`${inputClass} col-span-5 font-mono text-xs`}
+              />
+              <button
+                onClick={() => onChange(probes.filter((_, j) => j !== i))}
+                className="col-span-1 rounded-lg px-2 py-2 text-sm text-zinc-500 hover:bg-zinc-800 hover:text-red-400"
+                title="Remove source"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Which regions this source serves. Not cosmetic: these backends dispatch on
+                a region-specific tool name and answer an unrecognised one with 200 OK and
+                "Tool non supportato" — read as data, that becomes "this record is missing
+                from your database" for every gap checked. */}
+            <div className="flex flex-wrap items-center gap-1.5 text-xs">
+              <span className="text-zinc-500">Regions:</span>
+              {agents.map((agent) => (
+                <button
+                  key={agent}
+                  onClick={() => toggleAgent(i, agent)}
+                  className={`rounded-full px-2 py-0.5 ${
+                    regions.includes(agent)
+                      ? "bg-indigo-500/20 text-indigo-300"
+                      : "bg-zinc-800 text-zinc-500 hover:text-zinc-300"
+                  }`}
+                >
+                  {agent}
+                </button>
+              ))}
+              <span className="text-zinc-600">
+                {regions.length === 0
+                  ? "— none selected: this source is used for every region"
+                  : ""}
+              </span>
+            </div>
+
+            <textarea
+              value={probe.body_template}
+              onChange={(e) => setRow(i, { body_template: e.target.value })}
+              rows={7}
+              spellCheck={false}
+              className={`${inputClass} font-mono text-xs`}
+            />
+
+            <div className="grid grid-cols-12 items-center gap-2">
+              <input
+                value={probe.result_path}
+                onChange={(e) => setRow(i, { result_path: e.target.value })}
+                placeholder="results.0.result"
+                className={`${inputClass} col-span-4 font-mono text-xs`}
+              />
+              <label className="col-span-3 flex cursor-pointer items-center gap-2 text-sm text-zinc-300">
+                <input
+                  type="checkbox"
+                  checked={probe.enabled}
+                  onChange={(e) => setRow(i, { enabled: e.target.checked })}
+                  className="h-4 w-4 accent-indigo-500"
+                />
+                Enabled
+              </label>
+              <button
+                onClick={() => test(i)}
+                disabled={testing !== null || !probe.url}
+                className="col-span-2 rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
+              >
+                {testing === i ? "Testing…" : "Test"}
+              </button>
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="test question (a real one that should answer)"
+                className={`${inputClass} col-span-3 text-xs`}
+              />
+            </div>
+
+            <p className="text-xs text-zinc-600">
+              The body must be valid JSON and contain{" "}
+              <code className="text-zinc-400">{"{{query}}"}</code>. Test before saving: a
+              wrong URL or tool name still answers 200 OK with a polite sentence, and read
+              as data that sentence turns into &ldquo;this record is missing from your
+              database&rdquo; for every gap.
+            </p>
+
+            {typeof result === "string" && <p className="text-xs text-red-400">{result}</p>}
+            {result && typeof result !== "string" && (
+              <div className="rounded border border-zinc-800 bg-zinc-900/60 p-2 text-xs">
+                <div className="flex flex-wrap gap-x-3 text-zinc-500">
+                  <span
+                    className={
+                      result.verdict === "ok"
+                        ? "text-emerald-400"
+                        : result.verdict === "empty"
+                          ? "text-amber-400"
+                          : "text-red-400"
+                    }
+                  >
+                    {result.verdict === "ok"
+                      ? "answered"
+                      : result.verdict === "empty"
+                        ? "nothing found"
+                        : "failed / not a lookup"}
+                  </span>
+                  {result.http_status != null && <span>HTTP {result.http_status}</span>}
+                  {result.ms != null && <span>{result.ms}ms</span>}
+                </div>
+                <div className="mt-1 whitespace-pre-wrap break-words text-zinc-400">
+                  {result.response}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function SettingsPage() {
   const { data, mutate } = useSWR<AnalysisConfig>("/api/v1/config/analysis", fetcher);
+  // Only for the region chips on a lookup probe — the list of agents that have actually
+  // sent calls is the only honest source of region names.
+  const { data: overview } = useSWR<Overview>("/api/v1/analytics/overview", fetcher);
   const [config, setConfig] = useState<AnalysisConfig | null>(null);
   const [saved, setSaved] = useState<"idle" | "saving" | "saved" | "error">("idle");
 
@@ -126,6 +373,9 @@ export default function SettingsPage() {
       buckets: config.buckets.filter((c) => c.key.trim()),
       transfer_reasons: config.transfer_reasons.filter((c) => c.key.trim()),
       non_completion_reasons: config.non_completion_reasons.filter((c) => c.key.trim()),
+      // Same reason: a source with no key or no URL cannot be probed, and the API would
+      // reject the whole save rather than just that row.
+      lookup_probes: (config.lookup_probes ?? []).filter((p) => p.key.trim() && p.url.trim()),
     };
     try {
       const res = await fetch("/api/v1/config/analysis", {
@@ -265,6 +515,14 @@ export default function SettingsPage() {
             </p>
           </>
         )}
+      </section>
+
+      <section className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+        <ProbeEditor
+          probes={config.lookup_probes ?? []}
+          agents={overview?.agents ?? []}
+          onChange={(v) => set({ lookup_probes: v })}
+        />
       </section>
 
       <section className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">

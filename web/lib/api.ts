@@ -199,6 +199,7 @@ export type KnowledgeGaps = {
 export type GapGrouping = {
   considered: number;
   grouped: number;
+  joined_existing: number;
   needs_review: number;
   new_groups: number;
   remaining: number;

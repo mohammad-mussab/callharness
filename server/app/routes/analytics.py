@@ -321,18 +321,11 @@ async def _run_grouping_pass(
     ).all()
     existing = [{"group_id": g, "question": q} for g, q in existing_rows]
 
-    # New ids continue past every "g<n>" already stored, so a fresh group can never
-    # reuse an id that belongs to an unrelated record somewhere outside this window.
-    next_index = 0
-    for group_id, _ in existing_rows:
-        if group_id and group_id.startswith("g") and group_id[1:].isdigit():
-            next_index = max(next_index, int(group_id[1:]))
-
-    assigned, warnings = await group_gaps(items, existing, next_index)
+    assigned, warnings = await group_gaps(items, existing)
 
     new_groups: set[str] = set()
-    grouped_calls = 0
     review_calls = 0
+    joined_existing = 0
     known_ids = {g["group_id"] for g in existing}
     for item_id, (group_id, canonical) in assigned.items():
         call = by_item_id[item_id]
@@ -340,9 +333,13 @@ async def _run_grouping_pass(
         call.gap_group_question = canonical
         if group_id == GAP_NEEDS_REVIEW:
             review_calls += 1
-        elif group_id not in known_ids:
+        elif group_id in known_ids:
+            joined_existing += 1
+        else:
             new_groups.add(group_id)
-    # A record the customer sees as one line, i.e. a group with more than one call in it.
+    # Calls this pass put alongside another call from the same pass. Deliberately separate
+    # from joined_existing: a pass that only slots one call into a record created earlier
+    # reported "0 records created, 0 calls merged", which reads as though it did nothing.
     sizes: dict[str, int] = defaultdict(int)
     for group_id, _ in assigned.values():
         sizes[group_id] += 1
@@ -356,6 +353,7 @@ async def _run_grouping_pass(
         # sums this across passes, which turned the running total into nonsense.
         considered=len(assigned),
         grouped=grouped_calls,
+        joined_existing=joined_existing,
         needs_review=review_calls,
         new_groups=len(new_groups),
         remaining=len(items) - len(assigned),

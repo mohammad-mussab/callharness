@@ -24,6 +24,7 @@ explicitly and validly ask to merge.
 """
 
 import logging
+import uuid
 from typing import Any
 
 from .analysis.llm import chat_json
@@ -229,11 +230,25 @@ def build_user_prompt(
     return "\n".join(parts)
 
 
+def _new_group_id() -> str:
+    """A group id that cannot collide with one minted anywhere else.
+
+    Ids used to be `g{max(existing) + n}`, read at the start of a pass. Two passes that
+    overlapped therefore both started from the same maximum and minted the same ids for
+    different records — which silently merged unrelated questions, because a group is
+    only ever identified by this string. It put "riapertura laboratorio Supino" and an
+    oral-biopsy availability question on one line of a customer's report.
+    `_grouping_lock` now prevents the overlap, but an id that cannot collide in the first
+    place removes the whole class of failure, including across processes if this is ever
+    scaled out.
+    """
+    return f"g{uuid.uuid4().hex[:10]}"
+
+
 def _apply_response(
     response: dict[str, Any],
     items: list[dict[str, Any]],
     existing_ids: set[str],
-    next_index: int,
 ) -> tuple[dict[int, tuple[str, str | None]], list[str]]:
     """Turn the model's reply into {item id: (group id, canonical or None)}.
 
@@ -266,7 +281,6 @@ def _apply_response(
         if item_id is not None:
             assigned[item_id] = (GAP_NEEDS_REVIEW, None)
 
-    counter = next_index
     for group in response.get("groups") or []:
         if not isinstance(group, dict):
             continue
@@ -285,12 +299,10 @@ def _apply_response(
                     f"{len(members)} question(s) separate instead"
                 )
                 for item_id in members:
-                    counter += 1
-                    assigned[item_id] = (f"g{counter}", by_id[item_id]["question"])
+                    assigned[item_id] = (_new_group_id(), by_id[item_id]["question"])
                 continue
         else:
-            counter += 1
-            group_id = f"g{counter}"
+            group_id = _new_group_id()
             # A merged group with no canonical would show a blank headline, so fall back
             # to the shortest real question rather than dropping the group.
             if not canonical:
@@ -302,8 +314,7 @@ def _apply_response(
 
     for item in items:
         if item["id"] not in assigned:
-            counter += 1
-            assigned[item["id"]] = (f"g{counter}", item["question"])
+            assigned[item["id"]] = (_new_group_id(), item["question"])
             warnings.append(
                 f"model never placed id {item['id']}; kept it as its own record"
             )
@@ -314,7 +325,6 @@ def _apply_response(
 async def group_gaps(
     items: list[dict[str, Any]],
     existing: list[dict[str, str]],
-    next_index: int,
 ) -> tuple[dict[int, tuple[str, str | None]], list[str]]:
     """One LLM pass over the ungrouped questions. Returns assignments and warnings."""
     if not items:
@@ -335,7 +345,7 @@ async def group_gaps(
         timeout=_TIMEOUT_SECONDS,
     )
     assigned, warnings = _apply_response(
-        response, items, {g["group_id"] for g in existing}, next_index
+        response, items, {g["group_id"] for g in existing}
     )
     for warning in warnings:
         logger.warning("gap grouping: %s", warning)

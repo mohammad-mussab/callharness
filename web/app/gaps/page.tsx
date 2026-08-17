@@ -61,8 +61,8 @@ export default function GapsPage() {
     setError(null);
     setResult(null);
     const total: GapGrouping = {
-      considered: 0, grouped: 0, needs_review: 0, new_groups: 0,
-      remaining: 0, warnings: [],
+      considered: 0, grouped: 0, joined_existing: 0, needs_review: 0,
+      new_groups: 0, remaining: 0, warnings: [],
     };
     try {
       // Bounded so a server that always reports work remaining cannot spin forever.
@@ -76,6 +76,7 @@ export default function GapsPage() {
 
         total.considered += res.considered;
         total.grouped += res.grouped;
+        total.joined_existing += res.joined_existing ?? 0;
         total.needs_review += res.needs_review;
         total.new_groups += res.new_groups;
         total.remaining = res.remaining;
@@ -230,8 +231,9 @@ export default function GapsPage() {
         <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-3 text-sm text-zinc-400">
           Looked at {result.considered} question{result.considered === 1 ? "" : "s"}:{" "}
           {result.new_groups} record{result.new_groups === 1 ? "" : "s"} created,{" "}
-          {result.grouped} call{result.grouped === 1 ? "" : "s"} merged into a shared
-          record, {result.needs_review} sent for human review.
+          {result.grouped} merged with each other,{" "}
+          {result.joined_existing} added to a record already on the list,{" "}
+          {result.needs_review} sent for human review.
           {result.remaining > 0 && (
             <span className="text-amber-400">
               {" "}

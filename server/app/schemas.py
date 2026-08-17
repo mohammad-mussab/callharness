@@ -323,7 +323,11 @@ class GapGroupingOut(BaseModel):
     """Result of one grouping pass."""
 
     considered: int  # gaps sent to the model
-    grouped: int  # gaps that landed in a multi-call record
+    grouped: int  # gaps this pass placed alongside another gap from the same pass
+    # Gaps slotted into a record an earlier pass created. Reported separately because a
+    # pass doing only this has `grouped == 0` and `new_groups == 0`, which read as "did
+    # nothing" when it had in fact merged a call into an existing record.
+    joined_existing: int = 0
     needs_review: int
     new_groups: int
     remaining: int  # left ungrouped because the batch was capped; press again

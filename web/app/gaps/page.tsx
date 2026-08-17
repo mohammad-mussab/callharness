@@ -3,7 +3,14 @@
 import { useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
-import { fetcher, type KnowledgeGaps, type Overview } from "@/lib/api";
+import {
+  apiSend,
+  fetcher,
+  type GapGrouping,
+  type KnowledgeGap,
+  type KnowledgeGaps,
+  type Overview,
+} from "@/lib/api";
 import { formatDate } from "@/lib/format";
 
 const selectClass =
@@ -14,19 +21,72 @@ export default function GapsPage() {
   const [days, setDays] = useState("7");
   const [minCount, setMinCount] = useState("1");
   const [copied, setCopied] = useState(false);
+  const [grouping, setGrouping] = useState(false);
+  const [result, setResult] = useState<GapGrouping | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const params = new URLSearchParams({ days, min_count: minCount });
   if (agent) params.set("agent_id", agent);
 
-  const { data, isLoading } = useSWR<KnowledgeGaps>(
+  const { data: raw, isLoading, mutate } = useSWR<KnowledgeGaps>(
     `/api/v1/analytics/knowledge-gaps?${params}`,
     fetcher,
     { keepPreviousData: true }
   );
   const { data: overview } = useSWR<Overview>("/api/v1/analytics/overview", fetcher);
 
-  // The point of this page is the message that gets sent to whoever owns the data,
-  // so the report is generated in the exact shape it would be pasted into an email.
+  // A dashboard built from this checkout is routinely pointed at a backend that has not
+  // been redeployed yet — that is the whole point of web/.env.local forwarding to the
+  // VM's API, so a UI change can be judged against real calls before it ships. An older
+  // backend simply omits the fields added here, so default them rather than letting the
+  // page die on `undefined.length` when the two halves are out of step.
+  const data: KnowledgeGaps | undefined = raw && {
+    ...raw,
+    groups: raw.groups ?? [],
+    needs_review: raw.needs_review ?? [],
+    ungrouped_count: raw.ungrouped_count ?? 0,
+  };
+
+  // Only meaningful once something has been merged: before that every row is one call
+  // and every count is 1, so the filter would empty the page rather than narrow it.
+  const hasGrouping = (data?.groups ?? []).some((g) => g.grouped);
+
+  async function runGrouping() {
+    setGrouping(true);
+    setError(null);
+    setResult(null);
+    try {
+      const params = new URLSearchParams({ days });
+      if (agent) params.set("agent_id", agent);
+      const res = (await apiSend(
+        `/api/v1/analytics/knowledge-gaps/group?${params}`,
+        "POST"
+      )) as GapGrouping;
+      setResult(res);
+      await mutate();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Grouping failed");
+    } finally {
+      setGrouping(false);
+    }
+  }
+
+  async function ungroup(groupId: string) {
+    try {
+      await apiSend(
+        `/api/v1/analytics/knowledge-gaps/group/${encodeURIComponent(groupId)}`,
+        "DELETE"
+      );
+      await mutate();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not ungroup");
+    }
+  }
+
+  // The point of this page is the message that gets sent to whoever owns the data, so
+  // the report is generated in the exact shape it would be pasted into an email. The
+  // needs-review set is deliberately absent: nobody can add a record for "curva
+  // glicemica" with no attribute, and asking them to wastes their time.
   function reportText(d: KnowledgeGaps) {
     const lines = [
       `Missing information — last ${d.window_days} days`,
@@ -42,7 +102,10 @@ export default function GapsPage() {
       lines.push(
         `   asked ${g.count}x · ${g.transferred} transferred to an operator`
       );
-      g.examples.forEach((e) =>
+      (g.variants ?? [])
+        .filter((v) => v !== g.question)
+        .forEach((v) => lines.push(`   also asked as: "${v}"`));
+      (g.examples ?? []).forEach((e) =>
         lines.push(`   verify: call ${e.external_id ?? e.call_id} (${formatDate(e.started_at)})`)
       );
       lines.push("");
@@ -84,20 +147,68 @@ export default function GapsPage() {
           <option value="30">Last 30 days</option>
           <option value="90">Last 90 days</option>
         </select>
-        <select value={minCount} onChange={(e) => setMinCount(e.target.value)} className={selectClass}>
-          <option value="1">All questions</option>
-          <option value="2">Asked 2+ times</option>
-          <option value="5">Asked 5+ times</option>
-        </select>
-        {data && data.groups.length > 0 && (
-          <button
-            onClick={copyReport}
-            className="ml-auto rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500"
+        {hasGrouping && (
+          <select
+            value={minCount}
+            onChange={(e) => setMinCount(e.target.value)}
+            className={selectClass}
           >
-            {copied ? "Copied ✓" : "Copy report for email"}
-          </button>
+            <option value="1">All questions</option>
+            <option value="2">Asked 2+ times</option>
+            <option value="5">Asked 5+ times</option>
+          </select>
         )}
+        <div className="ml-auto flex items-center gap-2">
+          {data && data.ungrouped_count > 0 && (
+            <button
+              onClick={runGrouping}
+              disabled={grouping}
+              className="rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm font-medium text-zinc-200 hover:bg-zinc-700 disabled:opacity-50"
+              title="Ask the model which of these questions describe the same missing record"
+            >
+              {grouping
+                ? "Grouping…"
+                : `Group duplicates (${data.ungrouped_count})`}
+            </button>
+          )}
+          {data && data.groups.length > 0 && (
+            <button
+              onClick={copyReport}
+              className="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500"
+            >
+              {copied ? "Copied ✓" : "Copy report for email"}
+            </button>
+          )}
+        </div>
       </div>
+
+      {error && (
+        <div className="rounded-lg border border-red-900/60 bg-red-950/30 p-3 text-sm text-red-300">
+          {error}
+        </div>
+      )}
+
+      {result && (
+        <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-3 text-sm text-zinc-400">
+          Looked at {result.considered} question{result.considered === 1 ? "" : "s"}:{" "}
+          {result.new_groups} record{result.new_groups === 1 ? "" : "s"} created,{" "}
+          {result.grouped} call{result.grouped === 1 ? "" : "s"} merged into a shared
+          record, {result.needs_review} sent for human review.
+          {result.remaining > 0 && (
+            <span className="text-amber-400">
+              {" "}
+              {result.remaining} left over — press again to continue.
+            </span>
+          )}
+          {result.warnings.length > 0 && (
+            <ul className="mt-2 space-y-0.5 text-xs text-amber-400/90">
+              {result.warnings.map((w, i) => (
+                <li key={i}>· {w}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       {isLoading && !data && <p className="text-sm text-zinc-500">Loading…</p>}
 
@@ -123,12 +234,16 @@ export default function GapsPage() {
             </div>
             <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
               <div className="text-xs uppercase tracking-wide text-zinc-500">
-                Distinct gaps
+                {hasGrouping ? "Distinct gaps" : "Questions to group"}
               </div>
               <div className="mt-1 text-2xl font-semibold tabular-nums text-zinc-100">
                 {data.groups.length}
               </div>
-              <div className="mt-1 text-xs text-zinc-500">records to add</div>
+              {/* Before grouping this is one row per call, not a count of records —
+                  saying "records to add" here would overstate the work by ~3x. */}
+              <div className="mt-1 text-xs text-zinc-500">
+                {hasGrouping ? "records to add" : "not merged yet"}
+              </div>
             </div>
             <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
               <div className="text-xs uppercase tracking-wide text-zinc-500">
@@ -148,56 +263,120 @@ export default function GapsPage() {
           ) : (
             <ol className="space-y-2">
               {data.groups.map((g, i) => (
-                <li
-                  key={`${g.tool}-${g.question}-${i}`}
-                  className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4"
-                >
-                  <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                    <span className="text-xs tabular-nums text-zinc-600">{i + 1}</span>
-                    <span className="flex-1 text-sm font-medium text-zinc-100">
-                      {g.question}
-                    </span>
-                    <span className="rounded-full bg-zinc-700/40 px-2 py-0.5 text-xs tabular-nums text-zinc-300">
-                      asked {g.count}×
-                    </span>
-                    {g.transferred > 0 && (
-                      <span className="rounded-full bg-violet-500/15 px-2 py-0.5 text-xs tabular-nums text-violet-300">
-                        {g.transferred} transferred
-                      </span>
-                    )}
-                  </div>
-
-                  {g.variants.length > 1 && (
-                    <div className="mt-2 text-xs text-zinc-500">
-                      also asked as:{" "}
-                      {g.variants.filter((v) => v !== g.question).map((v, j) => (
-                        <span key={j} className="text-zinc-400">
-                          {j > 0 && " · "}&ldquo;{v}&rdquo;
-                        </span>
-                      ))}
-                    </div>
-                  )}
-
-                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
-                    <span>verify in call:</span>
-                    {g.examples.map((e) => (
-                      <Link
-                        key={e.call_id}
-                        href={`/calls/${e.call_id}`}
-                        className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-indigo-400 hover:bg-zinc-700"
-                        title={`${formatDate(e.started_at)} · ${e.agent_id}`}
-                      >
-                        {e.external_id ?? e.call_id.slice(0, 12)}
-                      </Link>
-                    ))}
-                    <span className="text-zinc-600">· lookup: {g.tool}</span>
-                  </div>
-                </li>
+                <GapRow key={g.group_id ?? g.examples[0]?.call_id ?? i} gap={g} index={i} onUngroup={ungroup} />
               ))}
             </ol>
+          )}
+
+          {data.needs_review.length > 0 && (
+            <div className="space-y-2 pt-2">
+              <div>
+                <h2 className="text-sm font-semibold text-zinc-300">
+                  Needs human review ({data.needs_review.reduce((n, g) => n + g.count, 0)})
+                </h2>
+                <p className="max-w-3xl text-xs text-zinc-500">
+                  Nobody can add a record for these — the question was mis-heard, names a
+                  subject without saying what was wanted about it, or is a search string
+                  the software generated rather than something a caller said. They are
+                  kept out of the report and its counts; open the calls to see what was
+                  really asked.
+                </p>
+              </div>
+              <ul className="space-y-1.5">
+                {data.needs_review.map((g, i) => (
+                  <li
+                    key={g.examples[0]?.call_id ?? i}
+                    className="rounded-lg border border-zinc-800/80 bg-zinc-900/40 p-3"
+                  >
+                    <div className="text-sm text-zinc-400">{g.question}</div>
+                    <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-zinc-600">
+                      {(g.examples ?? []).map((e) => (
+                        <Link
+                          key={e.call_id}
+                          href={`/calls/${e.call_id}`}
+                          className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-indigo-400/80 hover:bg-zinc-700"
+                          title={`${formatDate(e.started_at)} · ${e.agent_id}`}
+                        >
+                          {e.external_id ?? e.call_id.slice(0, 12)}
+                        </Link>
+                      ))}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
         </>
       )}
     </div>
+  );
+}
+
+function GapRow({
+  gap,
+  index,
+  onUngroup,
+}: {
+  gap: KnowledgeGap;
+  index: number;
+  onUngroup: (groupId: string) => void;
+}) {
+  const others = (gap.variants ?? []).filter((v) => v !== gap.question);
+  const examples = gap.examples ?? [];
+  return (
+    <li className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <span className="text-xs tabular-nums text-zinc-600">{index + 1}</span>
+        <span className="flex-1 text-sm font-medium text-zinc-100">{gap.question}</span>
+        {gap.count > 1 && (
+          <span className="rounded-full bg-zinc-700/40 px-2 py-0.5 text-xs tabular-nums text-zinc-300">
+            asked {gap.count}×
+          </span>
+        )}
+        {gap.transferred > 0 && (
+          <span className="rounded-full bg-violet-500/15 px-2 py-0.5 text-xs tabular-nums text-violet-300">
+            {gap.transferred} transferred
+          </span>
+        )}
+        {/* Grouping never re-judges a call it has already placed, so this is the only
+            way to undo a wrong merge. It costs nothing — the calls simply return to the
+            ungrouped pool for the next pass. */}
+        {gap.grouped && gap.count > 1 && gap.group_id && (
+          <button
+            onClick={() => onUngroup(gap.group_id!)}
+            className="rounded-full border border-zinc-700 px-2 py-0.5 text-xs text-zinc-500 hover:border-zinc-600 hover:text-zinc-300"
+            title="Split this back into separate questions"
+          >
+            ungroup
+          </button>
+        )}
+      </div>
+
+      {others.length > 0 && (
+        <div className="mt-2 text-xs text-zinc-500">
+          also asked as:{" "}
+          {others.map((v, j) => (
+            <span key={j} className="text-zinc-400">
+              {j > 0 && " · "}&ldquo;{v}&rdquo;
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
+        <span>verify in call:</span>
+        {examples.map((e) => (
+          <Link
+            key={e.call_id}
+            href={`/calls/${e.call_id}`}
+            className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-indigo-400 hover:bg-zinc-700"
+            title={`${formatDate(e.started_at)} · ${e.agent_id}`}
+          >
+            {e.external_id ?? e.call_id.slice(0, 12)}
+          </Link>
+        ))}
+        <span className="text-zinc-600">· lookup: {gap.tool}</span>
+      </div>
+    </li>
   );
 }

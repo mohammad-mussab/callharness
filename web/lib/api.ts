@@ -175,6 +175,12 @@ export type KnowledgeGap = {
   transferred: number;
   variants: string[];
   examples: GapExample[];
+  // Null until the grouping pass has placed these calls; present means the row can be
+  // ungrouped again. Nothing is merged until someone runs that pass, so before it every
+  // row is one call and `count` is 1.
+  group_id: string | null;
+  grouped: boolean;
+  needs_review: boolean;
 };
 
 export type KnowledgeGaps = {
@@ -184,6 +190,19 @@ export type KnowledgeGaps = {
   total_gaps: number;
   gap_call_rate: number | null;
   groups: KnowledgeGap[];
+  // Questions nobody can add a record for. Deliberately kept out of `groups`, out of the
+  // counts, and out of the copied email.
+  needs_review: KnowledgeGap[];
+  ungrouped_count: number;
+};
+
+export type GapGrouping = {
+  considered: number;
+  grouped: number;
+  needs_review: number;
+  new_groups: number;
+  remaining: number;
+  warnings: string[];
 };
 
 export type TimeseriesPoint = {

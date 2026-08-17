@@ -20,7 +20,9 @@ from ..disputes import (
 )
 from ..analysis.engine import non_completion_categories, transfer_categories
 from ..analysis.worker import get_or_create_config
-from ..knowledge_gaps import cluster_questions, extract_gaps
+from ..auth import require_api_key
+from ..gap_grouping import GAP_NEEDS_REVIEW, group_gaps
+from ..knowledge_gaps import RECORD_MISSING_BUCKET, extract_gaps
 from ..models import Call, Turn, utcnow
 from ..outcome import compute_outcome
 from ..schemas import (
@@ -28,6 +30,8 @@ from ..schemas import (
     DisputedCallOut,
     DisputesOut,
     GapExampleOut,
+    GapGroupingOut,
+    GapUngroupOut,
     KnowledgeGapOut,
     KnowledgeGapsOut,
     LatencyOut,
@@ -93,14 +97,24 @@ async def knowledge_gaps(
     agent_id: str | None = None,
     days: int = Query(default=7, ge=1, le=365),
     min_count: int = Query(default=1, ge=1),
-    limit: int = Query(default=50, le=200),
-    examples_per_group: int = Query(default=3, ge=1, le=20),
+    # Ungrouped, every gap-hitting call is its own row — 211 of them over the live Lazio
+    # history at the time of writing, against the 50 this used to default to. A cap below
+    # the real number silently drops missing records off the end of the customer's
+    # report, which is the one failure this page cannot afford.
+    limit: int = Query(default=500, le=2000),
 ):
     """Questions the agent couldn't answer because the record is missing.
 
     These are transfers the customer can eliminate by adding data, not by changing the
-    agent — so the output is grouped by question and carries call ids they can verify
-    against their own dashboard before acting.
+    agent — so the output carries call ids they can verify against their own dashboard
+    before acting.
+
+    NOTHING IS MERGED HERE. Each record_missing call is its own row until someone runs
+    the grouping pass (POST ./group), whose answer is stored on the call rows and simply
+    read back below. The string-similarity clustering this used to do merged four
+    different Roman branches into one line on live data — knowledge_gaps.py has the
+    measurement. A row's `count` is therefore 1 until it has been grouped, which is why
+    `min_count` is only meaningful afterwards.
     """
     since = utcnow() - timedelta(days=days)
     query = (
@@ -113,78 +127,226 @@ async def knowledge_gaps(
         query = query.where(Call.agent_id == agent_id)
     calls = (await session.execute(query)).scalars().all()
 
-    # Flatten to occurrences first, then cluster by meaning. Grouping on an exact
-    # normalized string splits the same missing record across every phrasing a caller
-    # happened to use, which is the difference between one actionable line and eleven
-    # near-duplicates nobody reads.
     occurrences: list[dict[str, Any]] = []
-    calls_with_gaps = 0
-    total_gaps = 0
-
     for call in calls:
-        gaps = extract_gaps(call)
-        if not gaps:
-            continue
-        calls_with_gaps += 1
-        outcome = compute_outcome(call.success, call.transferred)
-        # One call asking the same thing twice counts once, so the number reflects how
-        # many callers wanted it rather than how chatty the agent was.
-        seen_here: set[str] = set()
-        for gap in gaps:
-            total_gaps += 1
-            key = f"{gap['tool']}::{gap['normalized']}"
-            if key in seen_here:
-                continue
-            seen_here.add(key)
-            occurrences.append({**gap, "call": call, "outcome": outcome})
-
-    # Cluster within a tool: the same words asked of different lookups are different
-    # missing records.
-    by_tool: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for occurrence in occurrences:
-        by_tool[occurrence["tool"]].append(occurrence)
-
-    groups: list[dict[str, Any]] = []
-    for tool, items in by_tool.items():
-        for cluster in cluster_questions(items):
-            variants = sorted({i["question"] for i in cluster}, key=len)
-            transferred = sum(1 for i in cluster if i["call"].transferred)
-            groups.append(
+        for gap in extract_gaps(call):
+            occurrences.append(
                 {
-                    # Shortest phrasing reads best in the customer's email — it is the
-                    # question with the filler stripped by the callers themselves.
-                    "question": variants[0],
-                    "tool": tool,
-                    "count": len(cluster),
-                    "transferred": transferred,
-                    "variants": variants[:5],
-                    "examples": [
-                        GapExampleOut(
-                            call_id=i["call"].id,
-                            external_id=i["call"].external_id,
-                            started_at=i["call"].started_at,
-                            agent_id=i["call"].agent_id,
-                            question=i["question"],
-                            outcome=i["outcome"],
-                        )
-                        for i in cluster[:examples_per_group]
-                    ],
+                    **gap,
+                    "call": call,
+                    "outcome": compute_outcome(call.success, call.transferred),
                 }
             )
 
-    ranked = sorted(
-        (g for g in groups if g["count"] >= min_count),
-        key=lambda g: (-g["count"], -g["transferred"]),
-    )[:limit]
+    calls_with_gaps = len(occurrences)
+    ungrouped_count = sum(1 for o in occurrences if not o["call"].gap_group_id)
+
+    # An ungrouped call is its own group, keyed on its id so it can never collide with a
+    # stored "g<n>" and so the row is stable across reloads.
+    #
+    # Needs-review calls are keyed per call too, even though they all share one stored
+    # group id. They are ONE SECTION of the page, not one record: "curva glicemica" and
+    # "Fate analisi per la ricerca di Levico Butter?" are both unactionable for entirely
+    # different reasons, and folding them into a single row would show one question as
+    # the headline and bury the other — the same hiding that made string clustering
+    # unusable in the first place.
+    buckets: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for occurrence in occurrences:
+        stored = occurrence["call"].gap_group_id
+        if stored == GAP_NEEDS_REVIEW:
+            key = f"review:{occurrence['call'].id}"
+        else:
+            key = stored or f"call:{occurrence['call'].id}"
+        buckets[key].append(occurrence)
+
+    groups: list[dict[str, Any]] = []
+    needs_review: list[dict[str, Any]] = []
+    for group_id, items in buckets.items():
+        is_ungrouped = group_id.startswith("call:")
+        is_review = group_id.startswith("review:")
+        variants = sorted({i["question"] for i in items}, key=len)
+        # The canonical the grouping pass wrote, else the shortest real phrasing — which
+        # is the question with the filler already stripped by the callers themselves.
+        canonical = next(
+            (i["call"].gap_group_question for i in items if i["call"].gap_group_question),
+            None,
+        )
+        row = {
+            "question": canonical or variants[0],
+            # Grouping ignores the tool, so a merged row can span several. Name the one
+            # they agree on and say so plainly when they do not.
+            "tool": (
+                items[0]["tool"]
+                if len({i["tool"] for i in items}) == 1
+                else f"{len({i['tool'] for i in items})} lookups"
+            ),
+            "count": len(items),
+            "transferred": sum(1 for i in items if i["call"].transferred),
+            "variants": variants[:5],
+            # Every member is listed, not a sample: the whole point of the call id is
+            # that somebody can open each call and check it before adding a record.
+            "examples": [
+                GapExampleOut(
+                    call_id=i["call"].id,
+                    external_id=i["call"].external_id,
+                    started_at=i["call"].started_at,
+                    agent_id=i["call"].agent_id,
+                    question=i["question"],
+                    outcome=i["outcome"],
+                )
+                for i in sorted(items, key=lambda i: i["call"].started_at, reverse=True)
+            ],
+            # "review:<call id>" is a display key, not a stored group, so report the
+            # real stored value — otherwise the ungroup button would address nothing.
+            "group_id": None if is_ungrouped else (GAP_NEEDS_REVIEW if is_review else group_id),
+            "grouped": not is_ungrouped,
+            "needs_review": is_review,
+        }
+        (needs_review if is_review else groups).append(row)
+
+    # Most-asked first, then most transfers, then newest. The last key is what stops the
+    # page reshuffling on every reload before any grouping has run: at that point every
+    # count is 1 and every transferred is 0, so without it the order is whatever the
+    # database happened to return.
+    def rank(group: dict[str, Any]) -> tuple:
+        return (-group["count"], -group["transferred"], -group["examples"][0].started_at.timestamp())
+
+    ranked = sorted((g for g in groups if g["count"] >= min_count), key=rank)[:limit]
+    needs_review.sort(key=rank)
 
     return KnowledgeGapsOut(
         window_days=days,
         calls_scanned=len(calls),
         calls_with_gaps=calls_with_gaps,
-        total_gaps=total_gaps,
+        # Kept as the count of gap-hitting calls; it is no longer a count of records,
+        # because a record is only known once the grouping pass has run.
+        total_gaps=calls_with_gaps,
         gap_call_rate=(calls_with_gaps / len(calls) if calls else None),
         groups=[KnowledgeGapOut(**g) for g in ranked],
+        needs_review=[KnowledgeGapOut(**g) for g in needs_review],
+        ungrouped_count=ungrouped_count,
     )
+
+
+@router.post(
+    "/knowledge-gaps/group",
+    response_model=GapGroupingOut,
+    dependencies=[Depends(require_api_key)],
+)
+async def group_knowledge_gaps(
+    session: AsyncSession = Depends(get_session),
+    agent_id: str | None = None,
+    days: int = Query(default=7, ge=1, le=365),
+):
+    """Ask the LLM which of the ungrouped questions describe the same missing record.
+
+    Incremental by design: only calls with no `gap_group_id` are sent, together with the
+    canonical question of every group that already exists, so a new call joins an
+    existing record instead of starting a duplicate of it. Already-grouped calls are
+    never re-judged — undoing a bad merge is what DELETE ./group/{id} is for.
+
+    Existing groups are collected across the WHOLE database rather than the requested
+    window. Scoping them to the window would hide a group whose calls are all older than
+    `days` and let the model create a second group for the same record.
+    """
+    since = utcnow() - timedelta(days=days)
+    window = select(Call).options(selectinload(Call.turns)).where(
+        Call.started_at >= since, Call.bucket == RECORD_MISSING_BUCKET
+    )
+    if agent_id:
+        window = window.where(Call.agent_id == agent_id)
+    calls = (await session.execute(window)).scalars().all()
+
+    ungrouped = [c for c in calls if not c.gap_group_id]
+    items: list[dict[str, Any]] = []
+    by_item_id: dict[int, Call] = {}
+    for index, call in enumerate(ungrouped, start=1):
+        gaps = extract_gaps(call)
+        if not gaps:
+            continue
+        items.append(
+            {
+                "id": index,
+                "question": gaps[0]["question"],
+                "issue_note": call.issue_note,
+            }
+        )
+        by_item_id[index] = call
+
+    existing_rows = (
+        await session.execute(
+            select(Call.gap_group_id, Call.gap_group_question)
+            .where(
+                Call.gap_group_id.is_not(None),
+                Call.gap_group_id != GAP_NEEDS_REVIEW,
+                Call.gap_group_question.is_not(None),
+            )
+            .distinct()
+        )
+    ).all()
+    existing = [{"group_id": g, "question": q} for g, q in existing_rows]
+
+    # New ids continue past every "g<n>" already stored, so a fresh group can never
+    # reuse an id that belongs to an unrelated record somewhere outside this window.
+    next_index = 0
+    for group_id, _ in existing_rows:
+        if group_id and group_id.startswith("g") and group_id[1:].isdigit():
+            next_index = max(next_index, int(group_id[1:]))
+
+    assigned, warnings = await group_gaps(items, existing, next_index)
+
+    new_groups: set[str] = set()
+    grouped_calls = 0
+    review_calls = 0
+    known_ids = {g["group_id"] for g in existing}
+    for item_id, (group_id, canonical) in assigned.items():
+        call = by_item_id[item_id]
+        call.gap_group_id = group_id
+        call.gap_group_question = canonical
+        if group_id == GAP_NEEDS_REVIEW:
+            review_calls += 1
+        elif group_id not in known_ids:
+            new_groups.add(group_id)
+    # A record the customer sees as one line, i.e. a group with more than one call in it.
+    sizes: dict[str, int] = defaultdict(int)
+    for group_id, _ in assigned.values():
+        sizes[group_id] += 1
+    grouped_calls = sum(n for g, n in sizes.items() if g != GAP_NEEDS_REVIEW and n > 1)
+
+    await session.commit()
+    return GapGroupingOut(
+        considered=len(items),
+        grouped=grouped_calls,
+        needs_review=review_calls,
+        new_groups=len(new_groups),
+        remaining=len(items) - len(assigned),
+        warnings=warnings,
+    )
+
+
+@router.delete(
+    "/knowledge-gaps/group/{group_id}",
+    response_model=GapUngroupOut,
+    dependencies=[Depends(require_api_key)],
+)
+async def ungroup_knowledge_gap(
+    group_id: str, session: AsyncSession = Depends(get_session)
+):
+    """Split a group back into individual calls.
+
+    The escape hatch for a wrong merge. Grouping is incremental and never re-judges a
+    call it has already placed, so without this a bad merge would be permanent and every
+    later call matching it would pile in behind the wrong headline. Costs nothing: it
+    clears the two columns and the calls reappear in the ungrouped pool for the next pass.
+    """
+    calls = (
+        await session.execute(select(Call).where(Call.gap_group_id == group_id))
+    ).scalars().all()
+    for call in calls:
+        call.gap_group_id = None
+        call.gap_group_question = None
+    await session.commit()
+    return GapUngroupOut(group_id=group_id, calls_released=len(calls))
 
 
 @router.get("/disputes", response_model=DisputesOut)

@@ -387,11 +387,22 @@ def apply_result(call: Call, config: AnalysisConfig, result: dict) -> None:
         # null everywhere else, but a model that fills it in anyway shouldn't be able to
         # put a phantom line in the customer's Missing Information report.
         query = result.get("unanswered_query")
+        previous_query = call.unanswered_query
         call.unanswered_query = (
             str(query).strip()[:500]
             if query and call.bucket == "record_missing"
             else None
         )
+        # The gap grouping (gap_grouping.py) is an answer about a specific question. Once
+        # re-analysis rewords that question — or moves the call out of record_missing
+        # altogether — the stored group is about text that no longer exists, so it would
+        # sit under a headline the call never asked for. Dropping it puts the call back
+        # in the ungrouped pool, which is exactly what the grouping endpoint selects on.
+        # This matters most during scripts/reanalyze.py, the pass that re-runs the judge
+        # over every call after a taxonomy or prompt change.
+        if call.unanswered_query != previous_query:
+            call.gap_group_id = None
+            call.gap_group_question = None
 
     # SUPERSEDED by the bucket block above; retained only so installs that still have
     # classification_enabled on keep working. Note the `else` branches: they null the

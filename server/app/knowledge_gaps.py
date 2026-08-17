@@ -22,7 +22,6 @@ time.
 """
 
 import json
-import re
 from typing import Any
 
 # Result payloads that mean "the lookup itself failed" rather than "nothing matched".
@@ -165,124 +164,29 @@ def question_from_tool_call(tool_call: dict) -> str | None:
     return strings[0] if len(strings) == 1 else None
 
 
-# Filler that carries no information about *which* record is missing. Without a list
-# this long, "Mi sa dire gli orari di apertura per la Lombardia?" and "orari apertura
-# Lombardia" look like two different gaps and the report fragments into near-duplicates.
-_STOPWORDS = {
-    # Italian articles, prepositions, conjunctions
-    "il", "lo", "la", "i", "gli", "le", "un", "uno", "una", "di", "del", "della",
-    "dello", "dei", "delle", "degli", "a", "al", "alla", "ai", "alle", "allo", "da",
-    "dal", "dalla", "in", "nel", "nella", "con", "su", "sul", "sulla", "per", "tra",
-    "fra", "e", "ed", "o", "che", "chi", "cui", "non", "ma", "se", "come", "dove",
-    # Question openers and polite filler
-    "quali", "quale", "quanto", "quanta", "quanti", "quante", "cosa", "qual",
-    "mi", "sa", "dire", "sapere", "saprebbe", "potrebbe", "vorrei", "volevo",
-    "posso", "puo", "può", "devo", "deve", "serve", "servono", "ho", "avete",
-    "siete", "sono", "e'", "essere", "c", "ci", "si", "per favore", "favore",
-    "grazie", "buongiorno", "salve", "scusi", "senta", "gentilmente", "cortesemente",
-    "informazioni", "informazione", "info", "riguardo", "circa",
-    # English equivalents, so the same logic works for other deployments
-    "the", "of", "for", "at", "is", "are", "was", "were", "what", "which", "who",
-    "how", "much", "many", "do", "does", "did", "can", "could", "would", "please",
-    "tell", "me", "know", "about", "there", "any", "your", "you", "i", "it",
-}
-
-# Different words for the same idea. Only pairs where conflating them cannot hide a
-# distinct missing record — "price" and "cost" refer to the same absent field, whereas
-# two different cities never should be merged.
-_SYNONYMS = {
-    "costa": "prezzo", "costo": "prezzo", "costi": "prezzo", "tariffa": "prezzo",
-    "tariffe": "prezzo", "price": "prezzo", "cost": "prezzo",
-    "orario": "orari", "apre": "orari", "apertura": "orari", "chiude": "orari",
-    "chiusura": "orari", "hours": "orari", "opening": "orari",
-    "indirizzo": "sede", "dove": "sede", "address": "sede", "location": "sede",
-    "convenzionati": "convenzione", "convenzionato": "convenzione",
-    "analisi": "esame", "esami": "esame", "test": "esame", "exam": "esame",
-    "appuntamento": "prenotazione", "prenotare": "prenotazione",
-    "booking": "prenotazione", "appointment": "prenotazione",
-}
-
-# NOTE ON THE LIMIT OF THIS APPROACH
-# Token overlap plus a synonym table catches the variation callers actually produce —
-# filler, word order, and a handful of domain equivalents. It cannot catch genuine
-# paraphrase with no shared vocabulary ("posso mangiare prima del prelievo?" against
-# "serve il digiuno?"). Those stay separate, which fragments the report rather than
-# corrupting it: the failure is visible as two similar lines, not a wrong merge.
-# If that starts happening often, the upgrade is one LLM call over the *report* (not
-# per call) to merge remaining clusters — cheap, because it runs weekly over ~50 lines
-# rather than over every conversation.
-
-
-def question_tokens(text: str) -> set[str]:
-    """Meaningful words only: lowercased, de-accented, de-duplicated, synonym-folded."""
-    text = text.lower().strip()
-    for a, b in (("à", "a"), ("è", "e"), ("é", "e"), ("ì", "i"), ("ò", "o"),
-                 ("ù", "u"), ("'", " "), ("’", " ")):
-        text = text.replace(a, b)
-    text = re.sub(r"[^\w\s]", " ", text)
-    tokens = set()
-    for word in text.split():
-        if len(word) <= 1 or word in _STOPWORDS:
-            continue
-        tokens.add(_SYNONYMS.get(word, word))
-    return tokens
-
-
-def normalize_question(text: str) -> str:
-    """Stable key for a question — sorted meaningful tokens."""
-    tokens = question_tokens(text)
-    return " ".join(sorted(tokens)) or text.lower().strip()
-
-
-def similarity(a: set[str], b: set[str]) -> float:
-    """Overlap coefficient: shared tokens over the smaller set.
-
-    Chosen over Jaccard deliberately. Callers pad questions with filler to wildly
-    different lengths ("orari Lombardia" vs "mi saprebbe dire gli orari di apertura
-    per la sede della Lombardia"), and Jaccard punishes that length difference even
-    when one question fully contains the other. Overlap does not.
-    """
-    if not a or not b:
-        return 0.0
-    return len(a & b) / min(len(a), len(b))
-
-
-# 0.7 keeps "prezzo risonanza novara" together with "quanto costa risonanza novara"
-# (3 shared of 4 = 0.75) while keeping "orari lombardia" and "orari torino" apart
-# (2 shared of 3 = 0.67). Two different cities are two different missing records, and
-# merging them would send the customer a report that hides one of them.
-SIMILARITY_THRESHOLD = 0.7
-MIN_SHARED_TOKENS = 2
-
-
-def cluster_questions(items: list[dict]) -> list[list[dict]]:
-    """Group gap occurrences that refer to the same missing record.
-
-    `items` need a "question" key. Greedy single-pass clustering against each
-    cluster's accumulated token set — good enough at report sizes, and deterministic,
-    which matters when a customer asks why two lines merged.
-    """
-    clusters: list[dict] = []
-    # Longest first, so a fully-specified question anchors the cluster and shorter
-    # fragments join it rather than seeding a competing one.
-    for item in sorted(items, key=lambda x: -len(question_tokens(x["question"]))):
-        tokens = question_tokens(item["question"])
-        if not tokens:
-            continue
-        best, best_score = None, 0.0
-        for cluster in clusters:
-            score = similarity(tokens, cluster["tokens"])
-            if score > best_score and len(tokens & cluster["tokens"]) >= MIN_SHARED_TOKENS:
-                best, best_score = cluster, score
-        if best is not None and best_score >= SIMILARITY_THRESHOLD:
-            best["items"].append(item)
-            # Intersect rather than union: the shared core is what the cluster is
-            # about. Union would let a cluster drift wider with every member it
-            # absorbs until unrelated questions start matching it.
-            best["tokens"] &= tokens
-        else:
-            clusters.append({"tokens": set(tokens), "items": [item]})
-    return [c["items"] for c in clusters]
+# WHY THERE IS NO CLUSTERING HERE ANY MORE
+#
+# Until now this module merged occurrences with a stopword list, a synonym table and an
+# overlap coefficient at 0.7. Measured against the live Lazio database (211 gaps, Aug
+# 2026) it merged 16 groups, of which 11 were wrong, and the mechanism was always the
+# same: the branch name is a single token outvoted by generic ones. "orari della sede di
+# via Librogame" and "orari apertura sede di via Voliere" share {orari, sede, via} — 3 of
+# 4 tokens, 0.75, over the threshold — so four different Roman branches merged into one
+# line. The customer adds hours for Librogame, believes the list is finished, and three
+# branches keep failing with nobody able to see why. That is the exact harm the report
+# exists to prevent, and it is invisible: the three hidden questions are shown only as
+# "also asked as" under a headline naming a different place.
+#
+# It failed in the other direction too, because occurrences were clustered *within a
+# tool* and the tool attributed to a call is the last tool it called — usually
+# `request_transfer`, which is not a lookup at all. Two byte-identical questions
+# ("Quanto costano le analisi del sangue?") sat in two separate groups for that reason.
+#
+# So grouping is no longer derived from the words. Every record_missing call is its own
+# row, and merging is an explicit, on-demand LLM pass (gap_grouping.py) whose answer is
+# stored on the call rows. Token overlap cannot see that two branch names differ in
+# kind from two spellings of one exam, and no threshold fixes that — it is a judgement
+# about what the words refer to, which is what the LLM is for.
 
 
 def extract_gaps(call: Any) -> list[dict[str, Any]]:
@@ -326,19 +230,40 @@ def extract_gaps(call: Any) -> list[dict[str, Any]]:
                     question, tool = candidate, tool_call.get("name") or tool
         question = question or (last_user_text or "")
     else:
-        # Attribute the question to whichever tool was actually asked it, so the report
-        # still groups per lookup rather than lumping every tool together.
-        for turn in call.turns:
-            for tool_call in turn.tool_calls or []:
-                if isinstance(tool_call, dict) and tool_call.get("name"):
-                    tool = tool_call["name"]
+        tool = _tool_that_was_asked(call, question) or tool
 
     if not question:
         return []
-    return [
-        {
-            "question": question,
-            "normalized": normalize_question(question),
-            "tool": tool,
-        }
-    ]
+    return [{"question": question, "tool": tool}]
+
+
+# Tool names that are never a lookup, so attributing a missing record to one says
+# nothing about where the record should be added. `request_transfer` is the big one:
+# it is usually the LAST tool a failed call invokes, which is exactly why the old
+# "keep overwriting with whatever comes next" attribution below landed on it for 50 of
+# 192 live groups.
+_NON_LOOKUP_TOOLS = frozenset({"request_transfer", "transfer_call", "end_call", "hangup"})
+
+
+def _tool_that_was_asked(call: Any, question: str) -> str | None:
+    """Which lookup was actually asked `question`, as best as the turns can say.
+
+    Prefers the tool whose own arguments carry the question text — the judge is told to
+    word `unanswered_query` the way the tool was queried, so this usually matches
+    outright. Falls back to the last tool that could plausibly be a lookup, and gives up
+    rather than naming a transfer as the source of a missing record.
+    """
+    wanted = question.strip().lower()
+    fallback: str | None = None
+    for turn in call.turns:
+        for tool_call in turn.tool_calls or []:
+            if not isinstance(tool_call, dict):
+                continue
+            name = tool_call.get("name")
+            if not name or name in _NON_LOOKUP_TOOLS:
+                continue
+            asked = (question_from_tool_call(tool_call) or "").strip().lower()
+            if asked and (asked == wanted or asked in wanted or wanted in asked):
+                return name
+            fallback = name
+    return fallback

@@ -279,14 +279,25 @@ class GapExampleOut(BaseModel):
 
 
 class KnowledgeGapOut(BaseModel):
-    """A question the agent couldn't answer because the data wasn't there."""
+    """A question the agent couldn't answer because the data wasn't there.
+
+    Ungrouped, this is one call. Once the grouping pass has run, several calls asking
+    the same thing share one of these, and `question` is the canonical phrasing it wrote.
+    """
 
     question: str  # the clearest phrasing seen
-    tool: str  # which lookup came back empty
-    count: int  # how many times it was asked
+    # Which lookup came back empty. Informational only — grouping deliberately ignores
+    # it, since the attribution is a best guess (knowledge_gaps._tool_that_was_asked).
+    tool: str
+    count: int  # how many calls asked it
     transferred: int  # how many of those ended up with a human
     variants: list[str] = Field(default_factory=list)
     examples: list[GapExampleOut] = Field(default_factory=list)
+    # Null until the grouping pass has placed these calls. Present means the row can be
+    # ungrouped again; GAP_NEEDS_REVIEW means nobody can act on it.
+    group_id: str | None = None
+    grouped: bool = False
+    needs_review: bool = False
 
 
 class KnowledgeGapsOut(BaseModel):
@@ -297,7 +308,33 @@ class KnowledgeGapsOut(BaseModel):
     # Share of scanned calls that hit at least one missing record. This is the headline:
     # it says how much of the transfer rate is a content problem, not an agent problem.
     gap_call_rate: float | None
+    # Records the customer can act on. Excludes the needs-review set entirely.
     groups: list[KnowledgeGapOut] = Field(default_factory=list)
+    # Questions nobody can add a record for: mis-heard speech, a subject with no
+    # attribute, an internal search string. Kept off the report and out of its counts,
+    # but shown on the dashboard so somebody can listen to the calls.
+    needs_review: list[KnowledgeGapOut] = Field(default_factory=list)
+    # How many gaps in this window have never been through the grouping pass. The button
+    # is only worth pressing when this is above zero.
+    ungrouped_count: int = 0
+
+
+class GapGroupingOut(BaseModel):
+    """Result of one grouping pass."""
+
+    considered: int  # gaps sent to the model
+    grouped: int  # gaps that landed in a multi-call record
+    needs_review: int
+    new_groups: int
+    remaining: int  # left ungrouped because the batch was capped; press again
+    # Anything that degraded: an id the model dropped, a group it invented. Surfaced so
+    # a partial run cannot be mistaken for a clean one.
+    warnings: list[str] = Field(default_factory=list)
+
+
+class GapUngroupOut(BaseModel):
+    group_id: str
+    calls_released: int
 
 
 class TimeseriesPoint(BaseModel):

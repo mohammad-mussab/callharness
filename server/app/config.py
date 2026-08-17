@@ -32,6 +32,14 @@ class Settings(BaseSettings):
     # sampling away from the most likely token only adds chances to skip a step. Both
     # values measured identical on the stability test, so this costs nothing there.
     llm_temperature: float = 0.1
+    # Model for the knowledge-gap grouping pass only (gap_grouping.py). That pass runs
+    # once over the whole report on a button press, not per call, so a stronger model
+    # costs a few cents a week rather than scaling with call volume — and the judgement
+    # it makes is harder than bucketing: deciding that "via Librogame" and "via Voliere"
+    # are two branches while "lipasi" and "lipasi pancreatica" are one exam. A wrong
+    # merge here deletes a missing record from the customer's report permanently.
+    # Empty falls back to resolved_model.
+    gap_grouping_model: str = "gpt-5"
     openai_api_key: str | None = Field(
         default=None,
         validation_alias=AliasChoices("CALLHARNESS_OPENAI_API_KEY", "OPENAI_API_KEY"),

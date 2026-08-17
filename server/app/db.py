@@ -47,6 +47,10 @@ COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
     ("calls", "unanswered_query", "TEXT"),
     ("analysis_config", "buckets", "JSON"),
     ("analysis_config", "bucketing_enabled", "BOOLEAN DEFAULT TRUE"),
+    # Which missing record a record_missing call belongs to, filled in by the grouping
+    # pass rather than by per-call analysis. NULL = not grouped yet.
+    ("calls", "gap_group_id", "VARCHAR(64)"),
+    ("calls", "gap_group_question", "TEXT"),
 ]
 
 # Columns to remove from existing databases. Separate from COLUMN_MIGRATIONS because

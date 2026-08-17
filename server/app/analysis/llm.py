@@ -64,19 +64,31 @@ def _parse_json(text: str) -> dict:
         raise LLMError(f"Model did not return valid JSON: {text[:200]}")
 
 
-async def _openai_chat(system: str, user: str) -> str:
+# Models that accept only the default temperature. Sending one anyway costs a wasted
+# round-trip: the request 400s and the retry below strips the parameter and re-sends.
+# Cheap to avoid, and worth avoiding on the grouping pass, whose prompt is large.
+_FIXED_TEMPERATURE_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+
+
+def _rejects_temperature(model: str) -> bool:
+    return model.lower().startswith(_FIXED_TEMPERATURE_PREFIXES)
+
+
+async def _openai_chat(system: str, user: str, model: str | None = None) -> str:
     headers = {"Content-Type": "application/json"}
     if settings.openai_api_key:
         headers["Authorization"] = f"Bearer {settings.openai_api_key}"
+    model = model or settings.resolved_model
     payload = {
-        "model": settings.resolved_model,
-        "temperature": settings.llm_temperature,
+        "model": model,
         "response_format": {"type": "json_object"},
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
     }
+    if not _rejects_temperature(model):
+        payload["temperature"] = settings.llm_temperature
     url = f"{settings.llm_base_url.rstrip('/')}/chat/completions"
     async with httpx.AsyncClient(timeout=120) as client:
         resp = await client.post(url, json=payload, headers=headers)
@@ -108,14 +120,14 @@ async def _openai_chat(system: str, user: str) -> str:
         return resp.json()["choices"][0]["message"]["content"]
 
 
-async def _anthropic_chat(system: str, user: str) -> str:
+async def _anthropic_chat(system: str, user: str, model: str | None = None) -> str:
     headers = {
         "x-api-key": settings.anthropic_api_key or "",
         "anthropic-version": "2023-06-01",
         "Content-Type": "application/json",
     }
     payload = {
-        "model": settings.resolved_model,
+        "model": model or settings.resolved_model,
         "max_tokens": 2048,
         "temperature": 0.1,
         "system": system,
@@ -131,12 +143,18 @@ async def _anthropic_chat(system: str, user: str) -> str:
         return "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
 
 
-async def chat_json(system: str, user: str) -> dict:
+async def chat_json(system: str, user: str, model: str | None = None) -> dict:
+    """`model` overrides the configured one for this call only.
+
+    Used by the knowledge-gap grouping pass, which runs once over the whole report
+    rather than per call, so it can afford a stronger model than per-call analysis
+    without moving that cost onto every call.
+    """
     provider = settings.resolved_provider
     if provider == "anthropic":
-        raw = await _anthropic_chat(system, user)
+        raw = await _anthropic_chat(system, user, model)
     elif provider == "openai":
-        raw = await _openai_chat(system, user)
+        raw = await _openai_chat(system, user, model)
     else:
         raise LLMError("No LLM provider configured")
     return _parse_json(raw)

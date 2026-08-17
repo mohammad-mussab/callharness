@@ -79,6 +79,24 @@ class Call(Base):
     # Information report and the string the verification sweep re-runs against the API.
     unanswered_query: Mapped[str | None] = mapped_column(Text)
 
+    # Which missing record this call's unanswered_query belongs to, decided by the
+    # grouping pass in knowledge_gaps.py — NOT by the per-call analysis LLM. Several
+    # calls asking the same thing in different words share one gap_group_id, and
+    # gap_group_question holds the canonical phrasing that goes in the customer's
+    # report. Only the row that seeded a group needs the question, but every member
+    # carries it so a group survives its seed call being re-analysed away.
+    #
+    # gap_group_id == GAP_NEEDS_REVIEW is the reserved group for questions nobody can
+    # act on (mis-heard speech, a subject with no attribute, internal search strings);
+    # those are kept off the customer report entirely — see routes/analytics.py.
+    #
+    # NULL means "not grouped yet", which is what the grouping endpoint selects on, so
+    # it must be cleared whenever unanswered_query changes underneath it. engine.py's
+    # apply_result() does that on every re-analysis; without it a stored group would
+    # point at wording that no longer exists.
+    gap_group_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    gap_group_question: Mapped[str | None] = mapped_column(Text)
+
     # SUPERSEDED by `bucket`. Kept with their existing values rather than dropped:
     # DROP COLUMN destroys history with no undo, and disputes.py still reads them.
     # Nothing writes them any more — the freeze is achieved by turning

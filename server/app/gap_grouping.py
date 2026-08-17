@@ -40,7 +40,21 @@ GAP_NEEDS_REVIEW = "needs_review"
 
 # One id per call in the batch; the model only ever sees these short integers, never a
 # call id, so a hallucinated identifier cannot silently address the wrong row.
-_MAX_BATCH = 400
+#
+# 60 rather than "all of them" for two reasons, both learned on the first real run
+# against the 216 live Lazio gaps. Latency: gpt-5 reasons over the whole batch before
+# emitting anything, and 216 questions blew straight through the HTTP timeout, failing
+# the request after minutes of work and charging for it. Truncation: a reply listing 216
+# groups is long enough to get cut off mid-JSON, which loses the entire pass rather than
+# one group. A press handles one batch and reports `remaining`, so the caller repeats
+# until it reaches zero — and each batch is shown the groups the earlier ones created, so
+# splitting the work does not fragment records across batches.
+_MAX_BATCH = 60
+
+# A reasoning model over 60 questions runs well past the 120s default. Generous rather
+# than tight: the cost of waiting is a slow button, the cost of timing out is a request
+# that is billed and thrown away.
+_TIMEOUT_SECONDS = 600.0
 
 
 SYSTEM_PROMPT = """\
@@ -302,8 +316,11 @@ async def group_gaps(
     if not items:
         return {}, []
     if len(items) > _MAX_BATCH:
-        # Better a truthful partial pass than a request large enough that the model
-        # starts dropping ids wholesale; the caller reports what was left for next time.
+        # Better a truthful partial pass than a request large enough to time out or come
+        # back truncated; the caller reports what was left for the next press.
+        logger.info(
+            "gap grouping: %d ungrouped, handling %d this pass", len(items), _MAX_BATCH
+        )
         items = items[:_MAX_BATCH]
 
     user = build_user_prompt(items, existing)
@@ -311,6 +328,7 @@ async def group_gaps(
         SYSTEM_PROMPT,
         user,
         model=settings.gap_grouping_model or None,
+        timeout=_TIMEOUT_SECONDS,
     )
     assigned, warnings = _apply_response(
         response, items, {g["group_id"] for g in existing}, next_index

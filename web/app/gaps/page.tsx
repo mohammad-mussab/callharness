@@ -51,21 +51,46 @@ export default function GapsPage() {
   // and every count is 1, so the filter would empty the page rather than narrow it.
   const hasGrouping = (data?.groups ?? []).some((g) => g.grouped);
 
+  // The server handles a bounded batch per request — a reasoning model over every
+  // ungrouped question at once is slow enough to time out, and a reply that long can come
+  // back truncated. So keep pressing on the user's behalf until nothing is left, showing
+  // the running total. Progress is reported after each batch rather than at the end,
+  // because each one takes a while and a silent button looks broken.
   async function runGrouping() {
     setGrouping(true);
     setError(null);
     setResult(null);
+    const total: GapGrouping = {
+      considered: 0, grouped: 0, needs_review: 0, new_groups: 0,
+      remaining: 0, warnings: [],
+    };
     try {
-      const params = new URLSearchParams({ days });
-      if (agent) params.set("agent_id", agent);
-      const res = (await apiSend(
-        `/api/v1/analytics/knowledge-gaps/group?${params}`,
-        "POST"
-      )) as GapGrouping;
-      setResult(res);
-      await mutate();
+      // Bounded so a server that always reports work remaining cannot spin forever.
+      for (let pass = 0; pass < 40; pass++) {
+        const params = new URLSearchParams({ days });
+        if (agent) params.set("agent_id", agent);
+        const res = (await apiSend(
+          `/api/v1/analytics/knowledge-gaps/group?${params}`,
+          "POST"
+        )) as GapGrouping;
+
+        total.considered += res.considered;
+        total.grouped += res.grouped;
+        total.needs_review += res.needs_review;
+        total.new_groups += res.new_groups;
+        total.remaining = res.remaining;
+        total.warnings = [...total.warnings, ...(res.warnings ?? [])];
+        setResult({ ...total });
+        await mutate();
+
+        if (res.considered === 0 || res.remaining <= 0) break;
+      }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Grouping failed");
+      setError(
+        e instanceof Error
+          ? `${e.message} — anything already grouped has been saved; press again to continue.`
+          : "Grouping failed"
+      );
     } finally {
       setGrouping(false);
     }
@@ -167,7 +192,7 @@ export default function GapsPage() {
               title="Ask the model which of these questions describe the same missing record"
             >
               {grouping
-                ? "Grouping…"
+                ? `Grouping… ${result ? `${result.considered} done` : ""}`
                 : `Group duplicates (${data.ungrouped_count})`}
             </button>
           )}

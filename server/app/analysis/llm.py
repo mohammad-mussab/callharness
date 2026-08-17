@@ -74,7 +74,9 @@ def _rejects_temperature(model: str) -> bool:
     return model.lower().startswith(_FIXED_TEMPERATURE_PREFIXES)
 
 
-async def _openai_chat(system: str, user: str, model: str | None = None) -> str:
+async def _openai_chat(
+    system: str, user: str, model: str | None = None, timeout: float = 120
+) -> str:
     headers = {"Content-Type": "application/json"}
     if settings.openai_api_key:
         headers["Authorization"] = f"Bearer {settings.openai_api_key}"
@@ -90,7 +92,10 @@ async def _openai_chat(system: str, user: str, model: str | None = None) -> str:
     if not _rejects_temperature(model):
         payload["temperature"] = settings.llm_temperature
     url = f"{settings.llm_base_url.rstrip('/')}/chat/completions"
-    async with httpx.AsyncClient(timeout=120) as client:
+    # 120s is right for a single-call analysis prompt but far too short for a reasoning
+    # model working through a few dozen questions at once: the gap grouping pass timed
+    # out flat on its first real run. Callers doing bulk work pass their own.
+    async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.post(url, json=payload, headers=headers)
 
         # Drop parameters the endpoint rejects and try again, one at a time. Two real
@@ -120,7 +125,9 @@ async def _openai_chat(system: str, user: str, model: str | None = None) -> str:
         return resp.json()["choices"][0]["message"]["content"]
 
 
-async def _anthropic_chat(system: str, user: str, model: str | None = None) -> str:
+async def _anthropic_chat(
+    system: str, user: str, model: str | None = None, timeout: float = 120
+) -> str:
     headers = {
         "x-api-key": settings.anthropic_api_key or "",
         "anthropic-version": "2023-06-01",
@@ -133,7 +140,7 @@ async def _anthropic_chat(system: str, user: str, model: str | None = None) -> s
         "system": system,
         "messages": [{"role": "user", "content": user}],
     }
-    async with httpx.AsyncClient(timeout=120) as client:
+    async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.post(
             "https://api.anthropic.com/v1/messages", json=payload, headers=headers
         )
@@ -143,18 +150,21 @@ async def _anthropic_chat(system: str, user: str, model: str | None = None) -> s
         return "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
 
 
-async def chat_json(system: str, user: str, model: str | None = None) -> dict:
-    """`model` overrides the configured one for this call only.
+async def chat_json(
+    system: str, user: str, model: str | None = None, timeout: float = 120
+) -> dict:
+    """`model` and `timeout` override the defaults for this call only.
 
     Used by the knowledge-gap grouping pass, which runs once over the whole report
     rather than per call, so it can afford a stronger model than per-call analysis
-    without moving that cost onto every call.
+    without moving that cost onto every call — and needs longer than 120s, because a
+    reasoning model handling many questions at once is slow rather than merely expensive.
     """
     provider = settings.resolved_provider
     if provider == "anthropic":
-        raw = await _anthropic_chat(system, user, model)
+        raw = await _anthropic_chat(system, user, model, timeout)
     elif provider == "openai":
-        raw = await _openai_chat(system, user, model)
+        raw = await _openai_chat(system, user, model, timeout)
     else:
         raise LLMError("No LLM provider configured")
     return _parse_json(raw)

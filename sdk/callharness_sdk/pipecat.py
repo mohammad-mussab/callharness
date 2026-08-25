@@ -282,6 +282,14 @@ try:  # Observers require pipecat to be installed
         def _apply_pending(self, turn: dict[str, Any]) -> None:
             if not self._pending:
                 return
+            # True turn ONSET, captured when the bot actually began speaking.
+            # Without this, start_time comes from the transcript entry's own
+            # timestamp — and a transcript entry only exists once the utterance is
+            # COMPLETE, so the field named start_time held the turn's END. On a
+            # ~8s greeting that reads as "first bot turn at 10s" when production
+            # logs show first audio at 1.81s.
+            if self._pending.get("onset") is not None:
+                turn["start_time"] = round(self._pending["onset"], 2)
             for key, field in (("stt", "stt_ms"), ("llm", "llm_ttft_ms"), ("tts", "tts_ttfb_ms")):
                 if self._pending.get(key) is not None and turn.get(field) is None:
                     turn[field] = round(self._pending[key], 1)
@@ -329,6 +337,12 @@ try:  # Observers require pipecat to be installed
 
             if isinstance(frame, BotStartedSpeakingFrame):
                 self._bot_speaking = True
+                # Seconds from call start to the first audio of this turn — the
+                # edge a "start_time" should measure. Stored as pending so it
+                # lands on the assistant turn once its text arrives.
+                self._pending["onset"] = (
+                    datetime.now(timezone.utc) - self._recorder.started_at
+                ).total_seconds()
                 if self._user_stopped_at is not None:
                     e2e_ms = (asyncio.get_running_loop().time() - self._user_stopped_at) * 1000
                     self._user_stopped_at = None

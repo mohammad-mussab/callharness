@@ -53,6 +53,24 @@ class Settings(BaseSettings):
     analysis_poll_seconds: float = 3.0
     analysis_concurrency: int = 2
 
+    # Auto-requeue of failed analyses (analysis/failure_kind.py). A `failed` call
+    # used to be terminal, so the Aug-2026 credit outage silently stranded 158
+    # calls with no alert. Retryable failures now come back on an exponential
+    # backoff up to this many attempts, then park for a human.
+    #
+    # 5 attempts at 60s doubling = ~16min of trying before giving up, which rides
+    # out a provider blip without hammering a real outage. Set 0 to disable
+    # auto-requeue entirely and restore the old manual-only behaviour.
+    analysis_max_attempts: int = 5
+    analysis_retry_base_seconds: float = 60.0
+
+    # BLOCKED failures (no credit, bad key) are not retried on the normal timer —
+    # waiting does not refill an account. They are re-checked this often, so that
+    # topping up the balance recovers the backlog on its own instead of needing
+    # scripts/reanalyze.py. 30min: slow enough to be nearly free, fast enough that
+    # nobody has to remember.
+    analysis_blocked_recheck_seconds: float = 1800.0
+
     # Days to keep call recordings before deleting them from disk. Audio is by far the
     # largest thing this stores — a 50s stereo 16kHz WAV is ~3MB, so 1,000 calls/day is
     # ~1TB/year without a limit, roughly 300x everything else combined. Deleting the

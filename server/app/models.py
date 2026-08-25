@@ -54,6 +54,14 @@ class Call(Base):
     # pending | processing | completed | failed | skipped
     analysis_status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
     analysis_error: Mapped[str | None] = mapped_column(Text)
+
+    # Auto-requeue bookkeeping (analysis/failure_kind.py). analysis_failure_kind is
+    # retryable | blocked | terminal; analysis_attempts counts analyses that have
+    # already failed, so the backoff can grow and the worker can stop after N;
+    # analysis_next_retry_at is when this call becomes claimable again (NULL = now).
+    analysis_failure_kind: Mapped[str | None] = mapped_column(String(16))
+    analysis_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    analysis_next_retry_at: Mapped[datetime | None] = mapped_column(DateTime)
     analyzed_at: Mapped[datetime | None] = mapped_column(DateTime)
     llm_model: Mapped[str | None] = mapped_column(String(128))
 

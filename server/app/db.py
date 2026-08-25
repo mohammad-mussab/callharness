@@ -56,6 +56,14 @@ COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
     # here — create_all() below builds missing tables; only new columns on tables that
     # already exist have to be listed.
     ("analysis_config", "lookup_probes", "JSON"),
+    # Auto-requeue of failed analyses (analysis/failure_kind.py). Existing failed
+    # rows get NULL kind / 0 attempts / NULL next_retry, which the worker reads as
+    # "never triaged" — so the 158 calls stranded by the Aug-2026 credit outage
+    # become claimable again the first time the worker runs with this deployed.
+    # DEFAULT 0 (not NULL) on attempts so the counter can be incremented directly.
+    ("calls", "analysis_failure_kind", "VARCHAR(16)"),
+    ("calls", "analysis_attempts", "INTEGER DEFAULT 0"),
+    ("calls", "analysis_next_retry_at", "TIMESTAMP"),
 ]
 
 # Columns to remove from existing databases. Separate from COLUMN_MIGRATIONS because

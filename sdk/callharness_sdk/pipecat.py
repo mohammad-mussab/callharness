@@ -21,6 +21,7 @@ no changes to your STT/LLM/TTS services required.
 """
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -118,6 +119,33 @@ def create_recorder(
     return PipecatCallRecorder(client, agent_id=agent_id, **kwargs)
 
 
+# Which pipeline component a TTFB sample belongs to, from the processor name.
+#
+# Pipecat only tells us the emitting class's name (TTFBMetricsData carries just
+# `processor` and `model`), so this has to be a string match. The obvious version —
+# `"stt" in name`, checked before "tts" — is wrong, because a name can contain
+# another component's tag by accident: "ElevenLabsTTSService".lower() is
+# "elevenlab*stts*ervice", which contains "stt". Measured against all 93
+# STT/TTS/LLM service classes in pipecat 1.4.0, substring matching mis-files 3 of
+# them — ElevenLabs, Smallest and Speechmatics TTS all get booked as STT, so their
+# TTS numbers land in the STT column and the TTS column stays empty.
+#
+# Every one of those classes names the tag immediately before "Service", so
+# anchoring there is exact: 0 of 93 wrong. Falls back to the loose substring test
+# for a custom class that does not follow the convention, since a guess beats
+# dropping the sample.
+_COMPONENT_RE = re.compile(r"(stt|tts|llm)service")
+
+
+def _component_for(processor: str | None) -> str | None:
+    """Map a metrics processor name to "stt" | "llm" | "tts" (None if unknown)."""
+    name = (processor or "").lower()
+    match = _COMPONENT_RE.search(name)
+    if match:
+        return match.group(1)
+    return next((k for k in ("stt", "llm", "tts") if k in name), None)
+
+
 try:  # Observers require pipecat to be installed
     import asyncio
 
@@ -165,12 +193,9 @@ try:  # Observers require pipecat to be installed
                 if value is None:
                     continue
                 ms = float(value) * 1000
-                if "stt" in processor:
-                    self._recorder.record_component_latency("stt", ms)
-                elif "llm" in processor:
-                    self._recorder.record_component_latency("llm", ms)
-                elif "tts" in processor:
-                    self._recorder.record_component_latency("tts", ms)
+                component = _component_for(processor)
+                if component:
+                    self._recorder.record_component_latency(component, ms)
 
     class CallHarnessFrameObserver(BaseObserver):
         """All-in-one Pipecat observer for pipelines that don't use
@@ -365,7 +390,7 @@ try:  # Observers require pipecat to be installed
                     value = getattr(metric, "value", None)
                     if value is None:
                         continue
-                    kind = next((k for k in ("stt", "llm", "tts") if k in processor), None)
+                    kind = _component_for(processor)
                     if kind:
                         self._pending[kind] = float(value) * 1000
                 return

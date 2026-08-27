@@ -18,6 +18,9 @@ const nav = [
   { href: "/latency", label: "Latency & Quality" },
   { href: "/alerts", label: "Alerts" },
   { href: "/evaluators", label: "Custom Checks" },
+  // Placing a call is a different kind of action from reading about calls, which is
+  // why it sits at the bottom next to Settings rather than among the analytics pages.
+  { href: "/testcalls", label: "Test Calls" },
   { href: "/settings", label: "Analysis Settings" },
 ];
 

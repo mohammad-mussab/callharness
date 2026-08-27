@@ -316,6 +316,7 @@ async def run_worker(stop_event: asyncio.Event) -> None:
     last_recording_cleanup = 0.0
     last_log_sync = 0.0
     last_backlog_log = 0.0
+    last_testcall_cleanup = 0.0
     while not stop_event.is_set():
         try:
             claimed = await _claim_pending(settings.analysis_concurrency)
@@ -338,6 +339,17 @@ async def run_worker(stop_event: asyncio.Event) -> None:
                 await _expire_recordings()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Recording cleanup failed: %s", exc)
+        if now - last_testcall_cleanup >= settings.testcall_cleanup_interval_seconds:
+            last_testcall_cleanup = now
+            try:
+                # Synthetic calls are deleted from the call history once their TTL is up,
+                # so a robot's question can never reach the customer's missing-records
+                # report as real work. See testcall/runner.expire_test_calls.
+                from ..testcall.runner import expire_test_calls
+
+                await expire_test_calls()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Test call cleanup failed: %s", exc)
         if now - last_backlog_log >= FAILURE_BACKLOG_INTERVAL_SECONDS:
             last_backlog_log = now
             try:

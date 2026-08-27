@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .analysis.worker import run_worker
 from .config import settings
 from .db import init_db
-from .routes import alerts, analytics, calls, config, evaluators, gaps
+from .routes import alerts, analytics, calls, config, evaluators, gaps, testcalls
 from .schemas import HealthOut
 
 VERSION = "0.3.0"
@@ -46,6 +46,7 @@ app.include_router(gaps.router)
 app.include_router(config.router)
 app.include_router(alerts.router)
 app.include_router(evaluators.router)
+app.include_router(testcalls.router)
 
 
 @app.get("/api/v1/health", response_model=HealthOut, tags=["health"])

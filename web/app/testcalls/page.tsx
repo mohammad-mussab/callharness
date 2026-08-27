@@ -1,0 +1,441 @@
+"use client";
+
+import { useState } from "react";
+import useSWR from "swr";
+import {
+  apiSend,
+  fetcher,
+  type TestCallReadiness,
+  type TestRun,
+  type TestScenario,
+} from "@/lib/api";
+
+const inputClass =
+  "w-full rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-600";
+
+const ACTIVE = new Set(["queued", "dialing", "talking"]);
+
+export default function TestCallsPage() {
+  const { data: readiness } = useSWR<TestCallReadiness>(
+    "/api/v1/testcalls/readiness",
+    fetcher,
+    { refreshInterval: 5000 }
+  );
+  const { data: scenarios, mutate: mutateScenarios } = useSWR<TestScenario[]>(
+    "/api/v1/testcalls/scenarios",
+    fetcher
+  );
+  const { data: runs, mutate: mutateRuns } = useSWR<TestRun[]>(
+    "/api/v1/testcalls/runs?limit=25",
+    fetcher,
+    // Poll hard while a call is in the air — a run moves dialing → talking → completed
+    // over a couple of minutes — and back off to a slow refresh once nothing is live.
+    { refreshInterval: (data) => (data?.some((r) => ACTIVE.has(r.status)) ? 3000 : 20000) }
+  );
+
+  const [showForm, setShowForm] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<number | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
+
+  const running = runs?.some((r) => ACTIVE.has(r.status)) ?? false;
+
+  async function runScenario(scenario: TestScenario) {
+    setError(null);
+    setBusy(scenario.id);
+    try {
+      await apiSend(`/api/v1/testcalls/scenarios/${scenario.id}/run`, "POST");
+      await mutateRuns();
+    } catch (e) {
+      setError(e instanceof Error ? e.message.replace(/^API error \d+: /, "") : "Call failed.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function cancel(run: TestRun) {
+    await apiSend(`/api/v1/testcalls/runs/${run.id}/cancel`, "POST");
+    await mutateRuns();
+  }
+
+  async function remove(scenario: TestScenario) {
+    await apiSend(`/api/v1/testcalls/scenarios/${scenario.id}`, "DELETE");
+    await mutateScenarios();
+  }
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-xl font-semibold text-zinc-100">Test Calls</h1>
+          <p className="max-w-2xl text-sm text-zinc-500">
+            Ring the agent&apos;s real phone number and have an AI caller talk to it, so you can
+            see whether something you just shipped works{" "}
+            <span className="text-zinc-300">in production</span> — without waiting for a real
+            patient to trigger it. Each call presses its way through the phone menu, holds a
+            short conversation, then hangs up.
+          </p>
+        </div>
+        <button
+          onClick={() => setShowForm((v) => !v)}
+          className="shrink-0 rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500"
+        >
+          {showForm ? "Cancel" : "+ New scenario"}
+        </button>
+      </div>
+
+      {readiness && !readiness.enabled && (
+        <div className="rounded-xl border border-amber-900/60 bg-amber-950/30 p-4 text-sm text-amber-200">
+          <div className="font-medium">Test calling is not set up yet</div>
+          <p className="mt-1 text-amber-200/80">{readiness.missing}</p>
+        </div>
+      )}
+
+      {readiness?.enabled && (
+        <div className="flex flex-wrap gap-4 rounded-xl border border-zinc-800 bg-zinc-900/40 px-4 py-3 text-xs text-zinc-500">
+          <span>
+            Caller: <span className="text-zinc-300">{readiness.realtime_model}</span>
+          </span>
+          <span>
+            Hangs up after{" "}
+            <span className="text-zinc-300">{readiness.max_duration_seconds}s</span>
+          </span>
+          <span>
+            Test calls are deleted from the call history after{" "}
+            <span className="text-zinc-300">{readiness.ttl_hours}h</span>, so they never reach
+            the customer&apos;s reports
+          </span>
+        </div>
+      )}
+
+      {error && (
+        <div className="rounded-lg border border-red-900/60 bg-red-950/30 px-4 py-3 text-sm text-red-300">
+          {error}
+        </div>
+      )}
+
+      {showForm && (
+        <ScenarioForm
+          onDone={async () => {
+            setShowForm(false);
+            await mutateScenarios();
+          }}
+        />
+      )}
+
+      <section className="space-y-2">
+        <h2 className="text-sm font-medium text-zinc-400">Scenarios</h2>
+        {scenarios?.length === 0 && (
+          <p className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-4 text-sm text-zinc-500">
+            No scenarios yet. A scenario is one rehearsed call: which number to ring, which keys
+            to press for the menu, who the caller pretends to be, and what has to be true
+            afterwards.
+          </p>
+        )}
+        {scenarios?.map((s) => (
+          <div
+            key={s.id}
+            className="flex items-start justify-between gap-4 rounded-xl border border-zinc-800 bg-zinc-900/60 p-4"
+          >
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="font-medium text-zinc-100">{s.name}</span>
+                <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-zinc-400">
+                  {s.agent_id}
+                </span>
+                {!s.enabled && <span className="text-xs text-zinc-600">disabled</span>}
+              </div>
+              <div className="mt-1 text-xs text-zinc-500">
+                {s.to_number}
+                {s.dtmf_digits ? ` · presses ${s.dtmf_digits} (${s.dtmf_pause_seconds}s apart)` : " · no menu"}
+                {s.criteria.length > 0 ? ` · ${s.criteria.length} criteria` : " · nothing checked"}
+              </div>
+              <p className="mt-2 line-clamp-2 max-w-2xl text-xs text-zinc-600">{s.persona}</p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                onClick={() => runScenario(s)}
+                disabled={!readiness?.enabled || !s.enabled || running || busy === s.id}
+                className="rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-500"
+                title={running ? "A call is already in progress" : "Place the call now"}
+              >
+                {busy === s.id ? "Dialling…" : "Call now"}
+              </button>
+              <button
+                onClick={() => remove(s)}
+                className="rounded-lg border border-zinc-800 px-2 py-1.5 text-sm text-zinc-500 hover:text-zinc-300"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        ))}
+      </section>
+
+      <section className="space-y-2">
+        <h2 className="text-sm font-medium text-zinc-400">Recent runs</h2>
+        {runs?.length === 0 && (
+          <p className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-4 text-sm text-zinc-500">
+            No calls placed yet.
+          </p>
+        )}
+        {runs?.map((run) => (
+          <RunRow
+            key={run.id}
+            run={run}
+            expanded={open === run.id}
+            onToggle={() => setOpen(open === run.id ? null : run.id)}
+            onCancel={() => cancel(run)}
+          />
+        ))}
+      </section>
+    </div>
+  );
+}
+
+function RunRow({
+  run,
+  expanded,
+  onToggle,
+  onCancel,
+}: {
+  run: TestRun;
+  expanded: boolean;
+  onToggle: () => void;
+  onCancel: () => void;
+}) {
+  const active = ACTIVE.has(run.status);
+  return (
+    <div className="rounded-xl border border-zinc-800 bg-zinc-900/60">
+      <button
+        onClick={onToggle}
+        className="flex w-full items-center justify-between gap-4 p-4 text-left"
+      >
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <VerdictBadge run={run} />
+            <span className="truncate font-medium text-zinc-200">{run.scenario_name}</span>
+            <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-zinc-400">
+              {run.agent_id}
+            </span>
+          </div>
+          <div className="mt-1 text-xs text-zinc-500">
+            {new Date(run.started_at).toLocaleString()}
+            {run.duration_seconds != null && ` · ${Math.round(run.duration_seconds)}s`}
+            {run.ended_on_transfer && " · hung up when a transfer was announced"}
+          </div>
+        </div>
+        <span className="shrink-0 text-xs text-zinc-600">{expanded ? "Hide" : "Details"}</span>
+      </button>
+
+      {expanded && (
+        <div className="space-y-4 border-t border-zinc-800 p-4 text-sm">
+          {run.verdict_reason && <p className="text-zinc-300">{run.verdict_reason}</p>}
+          {run.error && <p className="text-amber-400">{run.error}</p>}
+
+          {run.criteria_results && run.criteria_results.length > 0 && (
+            <ul className="space-y-1">
+              {run.criteria_results.map((c, i) => (
+                <li key={i} className="flex gap-2 text-xs">
+                  <span className={c.passed ? "text-emerald-400" : "text-red-400"}>
+                    {c.passed ? "✓" : "✗"}
+                  </span>
+                  <span className="text-zinc-400">
+                    {c.criterion}
+                    {c.note && <span className="text-zinc-600"> — {c.note}</span>}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {run.call_id && !run.call_deleted && (
+            <p className="text-xs text-zinc-500">
+              The agent&apos;s own record:{" "}
+              <a href={`/calls/${run.call_id}`} className="text-indigo-400 hover:underline">
+                open the call
+              </a>
+              {run.call_expires_at &&
+                ` — deleted from the call history at ${new Date(
+                  run.call_expires_at
+                ).toLocaleTimeString()}`}
+            </p>
+          )}
+          {run.call_deleted && (
+            <p className="text-xs text-zinc-600">
+              The synthetic call has been removed from the call history, as intended. The
+              transcript below is kept.
+            </p>
+          )}
+          {!run.call_id && run.status === "completed" && (
+            <p className="text-xs text-amber-400">
+              The agent never reported this call to CallHarness — which is itself worth
+              investigating. Judged on our caller&apos;s transcript alone.
+            </p>
+          )}
+
+          {run.caller_transcript && run.caller_transcript.length > 0 ? (
+            <div className="space-y-1 rounded-lg bg-zinc-950/60 p-3">
+              {run.caller_transcript.map((line, i) => (
+                <div key={i} className="text-xs">
+                  <span
+                    className={
+                      line.speaker === "agent" ? "text-sky-400" : "text-zinc-500"
+                    }
+                  >
+                    {line.speaker === "agent" ? "Agent" : "Test caller"}:{" "}
+                  </span>
+                  <span className="text-zinc-300">{line.text}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-zinc-600">No transcript captured.</p>
+          )}
+
+          {active && (
+            <button
+              onClick={onCancel}
+              className="rounded-lg border border-red-900/60 px-3 py-1.5 text-xs text-red-300 hover:bg-red-950/40"
+            >
+              Hang up now
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VerdictBadge({ run }: { run: TestRun }) {
+  if (ACTIVE.has(run.status)) {
+    const label = run.status === "talking" ? "On the call" : "Dialling";
+    return (
+      <span className="rounded bg-indigo-500/20 px-1.5 py-0.5 text-xs text-indigo-300">
+        {label}…
+      </span>
+    );
+  }
+  // "error" is kept visually distinct from "fail" on purpose: a test that could not
+  // reach a verdict is a broken harness, not a broken agent, and colouring them the
+  // same would send someone to debug the wrong system.
+  const styles: Record<string, string> = {
+    pass: "bg-emerald-500/20 text-emerald-300",
+    fail: "bg-red-500/20 text-red-300",
+    error: "bg-amber-500/20 text-amber-300",
+  };
+  const verdict = run.verdict ?? "error";
+  const labels: Record<string, string> = {
+    pass: "Passed",
+    fail: "Failed",
+    error: "No verdict",
+  };
+  return (
+    <span className={`rounded px-1.5 py-0.5 text-xs ${styles[verdict] ?? styles.error}`}>
+      {labels[verdict] ?? "No verdict"}
+    </span>
+  );
+}
+
+function ScenarioForm({ onDone }: { onDone: () => Promise<void> }) {
+  const [name, setName] = useState("");
+  const [agentId, setAgentId] = useState("");
+  const [toNumber, setToNumber] = useState("");
+  const [digits, setDigits] = useState("");
+  const [pause, setPause] = useState("4");
+  const [persona, setPersona] = useState("");
+  const [criteria, setCriteria] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    try {
+      await apiSend("/api/v1/testcalls/scenarios", "POST", {
+        name,
+        agent_id: agentId,
+        to_number: toNumber,
+        dtmf_digits: digits || null,
+        dtmf_pause_seconds: Number(pause) || 4,
+        persona,
+        criteria: criteria
+          .split("\n")
+          .map((c) => c.trim())
+          .filter(Boolean),
+        enabled: true,
+      });
+      await onDone();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not save.");
+    }
+  }
+
+  return (
+    <form
+      onSubmit={submit}
+      className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900/60 p-4"
+    >
+      <div className="grid gap-3 sm:grid-cols-2">
+        <input
+          className={inputClass}
+          placeholder="Name — e.g. Opening hours, Milan branch"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          required
+        />
+        <input
+          className={inputClass}
+          placeholder="Region — must match exactly: Lazio, Lombardia, Trentino"
+          value={agentId}
+          onChange={(e) => setAgentId(e.target.value)}
+          required
+        />
+        <input
+          className={inputClass}
+          placeholder="Number to call — e.g. +3902…"
+          value={toNumber}
+          onChange={(e) => setToNumber(e.target.value)}
+          required
+        />
+        <div className="flex gap-3">
+          <input
+            className={inputClass}
+            placeholder="Menu keys — e.g. 2,2"
+            value={digits}
+            onChange={(e) => setDigits(e.target.value)}
+          />
+          <input
+            className={inputClass}
+            placeholder="Seconds"
+            value={pause}
+            onChange={(e) => setPause(e.target.value)}
+          />
+        </div>
+      </div>
+      <textarea
+        className={`${inputClass} h-24`}
+        placeholder="Who is calling and what do they want? Write it in the language the agent speaks. e.g. Sei un paziente che chiama per sapere gli orari di apertura della sede di via…"
+        value={persona}
+        onChange={(e) => setPersona(e.target.value)}
+        required
+      />
+      <textarea
+        className={`${inputClass} h-24`}
+        placeholder={"What has to be true afterwards? One per line.\nThe agent gave the opening hours\nThe agent did not transfer the call"}
+        value={criteria}
+        onChange={(e) => setCriteria(e.target.value)}
+      />
+      <p className="text-xs text-zinc-600">
+        The keys are pressed on a timer before the conversation starts — Twilio cannot send
+        them once the call is connected. If the menu&apos;s wording changes, adjust the seconds.
+      </p>
+      {error && <p className="text-sm text-red-400">{error}</p>}
+      <button
+        type="submit"
+        className="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500"
+      >
+        Save scenario
+      </button>
+    </form>
+  );
+}

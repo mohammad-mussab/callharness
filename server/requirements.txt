@@ -11,3 +11,7 @@ python-multipart>=0.0.9
 # Locating each call's raw agent log in Blob Storage (app/azure_logs.py). The sync
 # client is used from a thread, which is why the [aio] extra isn't needed.
 azure-storage-blob>=12.19
+# Client-side websockets for the automated test caller (app/testcall/realtime.py).
+# uvicorn[standard] already pulls this in for the *server* side; naming it here is
+# what stops a slimmer uvicorn install silently breaking test calls only.
+websockets>=12.0

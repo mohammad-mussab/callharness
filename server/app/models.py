@@ -377,3 +377,115 @@ class GapVerification(Base):
 
     call: Mapped[Call] = relationship(back_populates="gap_verifications")
     group: Mapped[GapGroup | None] = relationship(back_populates="verifications")
+
+
+class TestScenario(Base):
+    """One rehearsed phone call: who to ring, which keys to press, what to say.
+
+    Deliberately not an `Evaluator`, though the judging looks similar. An evaluator is a
+    question asked of *every* call that already happened; a scenario is an instruction to
+    *make* a call happen and then judge that one. Nothing else in the schema owns the
+    "cause a call" half.
+    """
+
+    __tablename__ = "test_scenarios"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(255))
+
+    # Which region this dials. Doubles as the key used to find the call row the agent
+    # ingests afterwards, so it must match the agent's own `agent_id` exactly
+    # ("Lazio", "Lombardia", "Trentino") — not a display name.
+    agent_id: Mapped[str] = mapped_column(String(255), index=True)
+    to_number: Mapped[str] = mapped_column(String(64))
+
+    # Keypad presses needed to get past the call-centre menu, in order, e.g. "2,2".
+    # They are sent BEFORE the audio stream opens and cannot be sent after: Twilio
+    # passes keypad presses inward only, never outward from a media server. So the
+    # pause is a blind guess at how long the menu talks, and is a setting because the
+    # first real call is what tells you whether it is right.
+    dtmf_digits: Mapped[str | None] = mapped_column(String(64))
+    dtmf_pause_seconds: Mapped[float] = mapped_column(Float, default=4.0)
+
+    # The caller's character and goal, handed to the Realtime model as its system
+    # instructions. Written in the language the agent speaks.
+    persona: Mapped[str] = mapped_column(Text)
+
+    # What the run has to show for itself. Judged together in one pass — the run passes
+    # only if every criterion holds — because criteria interact ("asked about X" and
+    # "was given opening hours" are one story, not two independent facts).
+    criteria: Mapped[list | None] = mapped_column(JSON, default=list)
+
+    # Per-scenario override of settings.testcall_max_duration_seconds. A scenario with
+    # three questions needs longer than a "does it answer at all" ping.
+    max_duration_seconds: Mapped[int | None] = mapped_column(Integer)
+
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class TestRun(Base):
+    """One execution of a scenario: what was dialled, what was said, what it proved."""
+
+    __tablename__ = "test_runs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+
+    # SET NULL, and the name/number copied alongside: deleting a scenario must not
+    # delete the evidence that a call was made and what it found.
+    scenario_id: Mapped[int | None] = mapped_column(
+        ForeignKey("test_scenarios.id", ondelete="SET NULL"), index=True
+    )
+    scenario_name: Mapped[str] = mapped_column(String(255))
+    agent_id: Mapped[str] = mapped_column(String(255), index=True)
+    to_number: Mapped[str] = mapped_column(String(64))
+
+    # queued -> dialing -> talking -> completed | failed
+    # "completed" means the call happened and was judged; a scenario the agent failed is
+    # still a completed run with verdict "fail". "failed" is reserved for the call never
+    # happening, which is a different problem with a different owner.
+    status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
+
+    # Twilio's identifier, kept so a call can be traced (or force-ended) from their side.
+    provider_call_sid: Mapped[str | None] = mapped_column(String(64))
+    # Shared secret in the stream URL. Twilio is not the only thing that can reach a
+    # public websocket, and without this anyone could open one and be handed a live
+    # OpenAI session on our key.
+    stream_token: Mapped[str | None] = mapped_column(String(64))
+
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    answered_at: Mapped[datetime | None] = mapped_column(DateTime)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime)
+    duration_seconds: Mapped[float | None] = mapped_column(Float)
+
+    # What our own caller heard and said: [{"speaker": "agent"|"tester", "text": ...}].
+    # Note "agent" here is the production assistant — from the Realtime model's point of
+    # view that is the *user*, and mislabelling it makes every transcript unreadable.
+    caller_transcript: Mapped[list | None] = mapped_column(JSON, default=list)
+
+    # The row the production agent's own SDK posted for this call, once matched. That
+    # row is the better evidence — it carries the tool calls, the latency and the raw
+    # agent log, none of which our side can see.
+    call_id: Mapped[str | None] = mapped_column(
+        ForeignKey("calls.id", ondelete="SET NULL"), index=True
+    )
+    # When that row is due to be deleted. The verdict and both transcripts live here on
+    # the run and survive it, so nothing about the test is lost — only the synthetic
+    # call is kept out of the customer's reports.
+    call_expires_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    call_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # pass | fail | error. "error" is not a failing agent — it is a test that could not
+    # reach a verdict (nobody answered, the stream never opened, the judge threw). Filing
+    # those as failures would make a broken harness look like a broken agent.
+    verdict: Mapped[str | None] = mapped_column(String(16), index=True)
+    verdict_reason: Mapped[str | None] = mapped_column(Text)
+    criteria_results: Mapped[list | None] = mapped_column(JSON, default=list)
+
+    # Set when the caller heard the agent announce a transfer and hung up on purpose.
+    # Reaching a human is a real outcome of a real call, but for a synthetic one it means
+    # occupying an operator, so the run ends there and says so.
+    ended_on_transfer: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)

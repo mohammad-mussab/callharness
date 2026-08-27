@@ -29,6 +29,14 @@ services:
       # Either name works in .env — the CALLHARNESS_-prefixed one or the bare
       # AZURE_ one that the Azure SDKs and the agents already use.
       CALLHARNESS_AZURE_STORAGE_CONNECTION_STRING: ${CALLHARNESS_AZURE_STORAGE_CONNECTION_STRING:-${AZURE_STORAGE_CONNECTION_STRING:-}}
+      # Optional: automated test calls (app/testcall/). All four are required before
+      # the feature will place a call; without them the page explains what is missing.
+      # The stream URL is the public wss:// address Twilio sends the call audio to.
+      CALLHARNESS_TWILIO_ACCOUNT_SID: ${CALLHARNESS_TWILIO_ACCOUNT_SID:-${TWILIO_ACCOUNT_SID:-}}
+      CALLHARNESS_TWILIO_AUTH_TOKEN: ${CALLHARNESS_TWILIO_AUTH_TOKEN:-${TWILIO_AUTH_TOKEN:-}}
+      CALLHARNESS_TWILIO_FROM_NUMBER: ${CALLHARNESS_TWILIO_FROM_NUMBER:-${TWILIO_PHONE_NUMBER:-}}
+      CALLHARNESS_TESTCALL_STREAM_URL: ${CALLHARNESS_TESTCALL_STREAM_URL:-}
+      CALLHARNESS_TESTCALL_TTL_HOURS: ${CALLHARNESS_TESTCALL_TTL_HOURS:-3}
     volumes:
       - calls_data:/data
     ports:

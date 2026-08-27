@@ -640,3 +640,60 @@ class HealthOut(BaseModel):
     version: str
     llm_provider: str
     analysis_enabled: bool
+
+
+class TestScenarioIn(BaseModel):
+    name: str
+    # Must equal the agent's own agent_id ("Lazio", "Lombardia", "Trentino"): it is both
+    # what gets dialled conceptually and the key the run is matched back on.
+    agent_id: str
+    to_number: str
+    # Keypad presses for the call-centre menu, in order. "2,2" and "22" both work.
+    dtmf_digits: str | None = None
+    dtmf_pause_seconds: float = Field(default=4.0, ge=0, le=30)
+    persona: str
+    criteria: list[str] = Field(default_factory=list)
+    max_duration_seconds: int | None = Field(default=None, ge=30, le=900)
+    enabled: bool = True
+
+
+class TestScenarioOut(TestScenarioIn):
+    id: int
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class TestRunOut(BaseModel):
+    id: str
+    scenario_id: int | None
+    scenario_name: str
+    agent_id: str
+    to_number: str
+    status: str
+    provider_call_sid: str | None
+    started_at: datetime
+    ended_at: datetime | None
+    duration_seconds: float | None
+    caller_transcript: list[dict] | None
+    call_id: str | None
+    call_expires_at: datetime | None
+    call_deleted: bool
+    verdict: str | None
+    verdict_reason: str | None
+    criteria_results: list[dict] | None
+    ended_on_transfer: bool
+    error: str | None
+
+    model_config = {"from_attributes": True}
+
+
+class TestCallReadinessOut(BaseModel):
+    """Whether a call could be placed right now, and what is missing if not."""
+
+    enabled: bool
+    missing: str | None
+    running: bool
+    max_duration_seconds: int
+    ttl_hours: float
+    realtime_model: str

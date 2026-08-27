@@ -110,6 +110,65 @@ class Settings(BaseSettings):
     # scripts/sync_azure_logs.py --recheck ignores this for a manual sweep.
     azure_log_lookback_days: int = 2
 
+    # --- Automated test calls (app/testcall/) -------------------------------
+    # A synthetic caller that dials the agent's real number, talks to it, and
+    # hangs up — the smoke test for "did what I just shipped survive contact with
+    # production". Twilio places the call; OpenAI's Realtime model is the voice.
+    # Leave twilio_account_sid unset to disable the feature entirely; every entry
+    # point degrades to a 503 explaining what is missing.
+    # Both spellings are accepted, as with OPENAI_API_KEY and the Azure connection
+    # string: these VMs already export the bare TWILIO_ names for the agents' own use,
+    # and accepting only the prefixed form silently yields an empty value — which reads
+    # as "test calling is not configured" rather than as a naming mismatch.
+    twilio_account_sid: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("CALLHARNESS_TWILIO_ACCOUNT_SID", "TWILIO_ACCOUNT_SID"),
+    )
+    twilio_auth_token: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("CALLHARNESS_TWILIO_AUTH_TOKEN", "TWILIO_AUTH_TOKEN"),
+    )
+    # The number shown to the agent. A foreign number is fine and actually useful
+    # here — it makes a test call obvious in the agent's own logs. Do NOT present a
+    # spoofed Italian number: AGCOM blocks internationally-routed calls carrying
+    # Italian CLI (since 19 Nov 2025), so those simply never arrive.
+    # TWILIO_PHONE_NUMBER is the name the agent VMs already use for the same value.
+    twilio_from_number: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "CALLHARNESS_TWILIO_FROM_NUMBER", "TWILIO_FROM_NUMBER", "TWILIO_PHONE_NUMBER"
+        ),
+    )
+
+    # Public wss:// address Twilio connects back to for the call audio. Twilio
+    # dials from its own cloud, so this must be reachable from the internet — the
+    # one thing about this feature that needs an open door. On the Lazio VM that
+    # means a location on the nginx already serving 443; see docs in the router.
+    # No trailing slash; the run id and token are appended.
+    testcall_stream_url: str | None = None
+
+    # Realtime model that plays the caller. Not the analysis model: this one has to
+    # hold a spoken conversation in Italian at telephone latency, which the chat
+    # models cannot do at all. Audio is exchanged as G.711 µ-law 8kHz ("audio/pcmu")
+    # in both directions, which is exactly Twilio's wire format — so the bridge
+    # relays bytes and never resamples.
+    testcall_realtime_model: str = "gpt-realtime"
+    testcall_realtime_voice: str = "marin"
+
+    # Hard cap on how long a test call may last. The caller hangs up at this point
+    # whatever is happening. Every second past the answer costs money on both
+    # sides — ours in Realtime audio, the customer's in their own STT/LLM/TTS and
+    # their lookup APIs — so this is a spend limit, not a timeout.
+    testcall_max_duration_seconds: int = 180
+
+    # How long the matched production call row survives before it is deleted.
+    # A synthetic caller asking about a record the database lacks would otherwise
+    # land on the customer's Missing Information report as a real caller need.
+    # Deleting the row is cruder than an exclusion flag and deliberately so: it
+    # touches no analytics query and cannot be forgotten. 0 keeps them forever.
+    testcall_ttl_hours: float = 3.0
+    testcall_cleanup_interval_seconds: float = 600.0
+
     # SMTP settings for the email alert channel (CALLHARNESS_SMTP_*).
     # Leave smtp_host unset to disable email delivery.
     smtp_host: str | None = None
@@ -118,6 +177,24 @@ class Settings(BaseSettings):
     smtp_password: str | None = None
     smtp_from: str | None = None
     smtp_starttls: bool = True
+
+    @property
+    def testcall_enabled(self) -> bool:
+        """Whether a test call can actually be placed.
+
+        All four are required and none has a sensible default: without the Twilio
+        credentials nothing can dial, without a public stream URL Twilio has
+        nowhere to send the audio, and without an OpenAI key there is no voice.
+        Reported by GET /api/v1/testcalls/readiness so the page can say which one
+        is missing instead of failing at dial time.
+        """
+        return bool(
+            self.twilio_account_sid
+            and self.twilio_auth_token
+            and self.twilio_from_number
+            and self.testcall_stream_url
+            and self.openai_api_key
+        )
 
     @property
     def resolved_provider(self) -> str:

@@ -421,6 +421,59 @@ export type Evaluator = {
   created_at: string;
 };
 
+// --- Automated test calls ---------------------------------------------------
+// A scenario is a rehearsed phone call; a run is one execution of it. Keep in sync
+// with server/app/schemas.py by hand — there is no codegen here.
+
+export type TestScenario = {
+  id: number;
+  name: string;
+  agent_id: string;
+  to_number: string;
+  dtmf_digits: string | null;
+  dtmf_pause_seconds: number;
+  persona: string;
+  criteria: string[];
+  max_duration_seconds: number | null;
+  enabled: boolean;
+  created_at: string;
+};
+
+export type TestRun = {
+  id: string;
+  scenario_id: number | null;
+  scenario_name: string;
+  agent_id: string;
+  to_number: string;
+  // queued | dialing | talking | completed | failed
+  status: string;
+  provider_call_sid: string | null;
+  started_at: string;
+  ended_at: string | null;
+  duration_seconds: number | null;
+  // [{ speaker: "agent" | "tester", text }] — "agent" is the production assistant.
+  caller_transcript: { speaker: string; text: string }[] | null;
+  call_id: string | null;
+  call_expires_at: string | null;
+  call_deleted: boolean;
+  // pass | fail | error. "error" means the test could not reach a verdict, which is
+  // a different thing from the agent failing.
+  verdict: string | null;
+  verdict_reason: string | null;
+  criteria_results: { criterion?: string; passed?: boolean; note?: string }[] | null;
+  ended_on_transfer: boolean;
+  error: string | null;
+};
+
+export type TestCallReadiness = {
+  enabled: boolean;
+  missing: string | null;
+  running: boolean;
+  max_duration_seconds: number;
+  ttl_hours: number;
+  realtime_model: string;
+};
+
 export const fetcher = async (url: string) => {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`API error ${res.status}`);

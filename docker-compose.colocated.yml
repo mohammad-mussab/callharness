@@ -59,6 +59,21 @@ services:
       # produced an empty value for anyone who wrote the prefixed one, which reads
       # as "Azure not configured" rather than as a typo.
       CALLHARNESS_AZURE_STORAGE_CONNECTION_STRING: ${CALLHARNESS_AZURE_STORAGE_CONNECTION_STRING:-${AZURE_STORAGE_CONNECTION_STRING:-}}
+      # Automated test calls (app/testcall/). All four are needed before the feature
+      # offers a button; leaving them unset disables it and the page says which one is
+      # missing. Note the caller ID must NOT be a spoofed Italian number — AGCOM blocks
+      # internationally-routed calls carrying Italian CLI, so those never arrive.
+      CALLHARNESS_TWILIO_ACCOUNT_SID: ${CALLHARNESS_TWILIO_ACCOUNT_SID:-${TWILIO_ACCOUNT_SID:-}}
+      CALLHARNESS_TWILIO_AUTH_TOKEN: ${CALLHARNESS_TWILIO_AUTH_TOKEN:-${TWILIO_AUTH_TOKEN:-}}
+      CALLHARNESS_TWILIO_FROM_NUMBER: ${CALLHARNESS_TWILIO_FROM_NUMBER:-${TWILIO_PHONE_NUMBER:-}}
+      # The public wss:// address Twilio connects back to with the call audio. This is
+      # the one endpoint here that has to be reachable from the internet; it is served
+      # through the nginx already terminating TLS on 443, not by publishing a port.
+      CALLHARNESS_TESTCALL_STREAM_URL: ${CALLHARNESS_TESTCALL_STREAM_URL:-}
+      CALLHARNESS_TESTCALL_MAX_DURATION_SECONDS: ${CALLHARNESS_TESTCALL_MAX_DURATION_SECONDS:-180}
+      # How long a synthetic call stays in the call history before it is deleted, so a
+      # robot's question can never reach the customer's missing-records report as work.
+      CALLHARNESS_TESTCALL_TTL_HOURS: ${CALLHARNESS_TESTCALL_TTL_HOURS:-3}
     volumes:
       - calls_data:/data
     ports:

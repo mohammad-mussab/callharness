@@ -42,6 +42,9 @@ TESTER_TRANSCRIPT_EVENTS = (
 )
 AGENT_TRANSCRIPT_EVENTS = ("conversation.item.input_audio_transcription.completed",)
 
+# The one tool the caller is given: hanging up.
+END_CALL_TOOL = "end_call"
+
 
 class RealtimeError(RuntimeError):
     pass
@@ -93,6 +96,34 @@ class RealtimeSession:
                             "voice": self.voice,
                         },
                     },
+                    # The caller needs a way to put the phone down. Without it neither
+                    # side ever ends the call: observed on the first live run, where the
+                    # agent and our caller exchanged "arrivederci" six times and the
+                    # call only stopped at the duration cap, three minutes in. Both
+                    # sides are polite machines, so somebody has to hang up on purpose.
+                    "tools": [
+                        {
+                            "type": "function",
+                            "name": END_CALL_TOOL,
+                            "description": (
+                                "Hang up. Call this immediately after you have said "
+                                "goodbye, once you have the information you called for "
+                                "or it is clear you will not get it. Do not keep "
+                                "exchanging pleasantries."
+                            ),
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "reason": {
+                                        "type": "string",
+                                        "description": "Briefly, why the call is over.",
+                                    }
+                                },
+                                "required": [],
+                            },
+                        }
+                    ],
+                    "tool_choice": "auto",
                 },
             }
         )
@@ -139,6 +170,22 @@ def audio_delta(event: dict) -> str | None:
         if isinstance(delta, str) and delta:
             return delta
     return None
+
+
+def wants_to_hang_up(event: dict) -> bool:
+    """Did the caller invoke the end_call tool?
+
+    Two event shapes are accepted because the Realtime API reports a finished function
+    call both as its own event and inside a completed output item, and which one a
+    given model snapshot emits is not worth betting a live phone call on.
+    """
+    kind = event.get("type")
+    if kind in ("response.function_call_arguments.done", "response.function_call_arguments.delta"):
+        return event.get("name") == END_CALL_TOOL
+    if kind == "response.output_item.done":
+        item = event.get("item") or {}
+        return item.get("type") == "function_call" and item.get("name") == END_CALL_TOOL
+    return False
 
 
 def transcript_line(event: dict) -> tuple[str, str] | None:

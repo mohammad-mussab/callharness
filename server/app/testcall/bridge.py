@@ -115,11 +115,21 @@ async def run_bridge(
 
     async def pump_model_to_twilio() -> None:
         """Our caller's voice out, transcripts collected on the way past."""
+        # Whether the model is mid-answer. Cancelling when it is not draws an error
+        # event back ("Cancellation failed: no active response found") which would be
+        # stored on the run and make a perfectly good call look broken. Observed on
+        # every local run before this flag existed.
+        responding = False
         try:
             async for event in session.events():
                 if stop.is_set():
                     break
                 kind = event.get("type")
+
+                if kind == "response.created":
+                    responding = True
+                elif kind in ("response.done", "response.cancelled"):
+                    responding = False
 
                 delta = rt.audio_delta(event)
                 if delta and result.stream_sid:
@@ -135,14 +145,16 @@ async def run_bridge(
                     continue
 
                 if kind == "input_audio_buffer.speech_started":
-                    # The agent started talking while we were. Drop what Twilio has
-                    # queued and stop generating, or the two of them talk over each
-                    # other for as long as the buffered audio lasts.
+                    # The agent started talking. Drop what Twilio has queued, or the two
+                    # of them talk over each other for as long as the buffered audio
+                    # lasts. Only cancel a response that is actually running.
                     if result.stream_sid:
                         await websocket.send_text(
                             json.dumps({"event": "clear", "streamSid": result.stream_sid})
                         )
-                    await session.cancel_response()
+                    if responding:
+                        await session.cancel_response()
+                        responding = False
                     continue
 
                 line = rt.transcript_line(event)
@@ -158,6 +170,12 @@ async def run_bridge(
 
                 if kind == "error":
                     detail = (event.get("error") or {}).get("message") or str(event.get("error"))
+                    if "cancellation failed" in detail.lower():
+                        # The response ended between our decision to cancel and the
+                        # cancel arriving. Nothing went wrong, and recording it would
+                        # put a scary line on a call that went fine.
+                        logger.debug("Ignoring benign cancel race: %s", detail)
+                        continue
                     result.error = f"Realtime error: {detail}"
                     logger.warning("Realtime error during test call: %s", detail)
         except Exception as exc:  # noqa: BLE001

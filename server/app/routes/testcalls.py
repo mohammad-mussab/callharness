@@ -205,16 +205,21 @@ async def cancel_run(run_id: str, session: AsyncSession = Depends(get_session)):
 
 
 @router.websocket("/stream/{run_id}")
-async def stream(websocket: WebSocket, run_id: str, token: str = Query(default="")):
-    """Twilio connects here when the call is answered and the digits have been sent."""
-    run_data = await _authorize_stream(run_id, token)
+async def stream(websocket: WebSocket, run_id: str):
+    """Twilio connects here when the call is answered and the digits have been sent.
+
+    Note what is checked *where*, and why it cannot be otherwise. The run's existence
+    and state are checked before accepting, so a replayed or stale connection is
+    refused outright. **The token cannot be**: Twilio drops query strings from the
+    stream URL, so it arrives inside the ``start`` message, which only exists after the
+    socket is accepted. The bridge checks it there, before opening anything that costs
+    money.
+    """
+    run_data = await _open_stream(run_id)
     if run_data is None:
-        # Closed without accepting: an unauthorised caller gets no socket at all, and
-        # in particular never reaches the code that would open a Realtime session on
-        # our API key.
         await websocket.close(code=1008)
         return
-    instructions, max_seconds = run_data
+    instructions, max_seconds, expected_token = run_data
 
     await websocket.accept()
     try:
@@ -222,6 +227,7 @@ async def stream(websocket: WebSocket, run_id: str, token: str = Query(default="
             websocket,
             instructions=instructions,
             max_duration_seconds=max_seconds,
+            expected_token=expected_token,
             voice=settings.testcall_realtime_voice,
         )
     except Exception as exc:  # noqa: BLE001 - the run must always be closed out
@@ -238,19 +244,17 @@ async def stream(websocket: WebSocket, run_id: str, token: str = Query(default="
     asyncio.create_task(runner.finish_run(run_id, result))
 
 
-async def _authorize_stream(run_id: str, token: str) -> tuple[str, int] | None:
-    """Check the token and return the instructions, or None to refuse.
+async def _open_stream(run_id: str) -> tuple[str, int, str] | None:
+    """Everything that can be decided before the socket is accepted.
 
-    Two conditions, not one. The token stops a stranger opening the socket; the status
-    check stops a *replay* of a real Twilio request, since a run only accepts a stream
-    while it is dialing.
+    Returns the caller's instructions, the duration cap and the token the bridge must
+    see, or None to refuse. Moving the run off "dialing" here is what makes the socket
+    single-use: a second connection for the same run finds the wrong status and is
+    turned away.
     """
     async with SessionLocal() as session:
         run = await session.get(TestRun, run_id)
-        if run is None or not run.stream_token or not token:
-            return None
-        if not _constant_time_equals(run.stream_token, token):
-            logger.warning("Rejected test call stream for %s: bad token", run_id)
+        if run is None or not run.stream_token:
             return None
         if run.status != "dialing":
             logger.warning("Rejected test call stream for %s: status is %s", run_id, run.status)
@@ -258,18 +262,12 @@ async def _authorize_stream(run_id: str, token: str) -> tuple[str, int] | None:
         scenario = await session.get(TestScenario, run.scenario_id) if run.scenario_id else None
         if scenario is None:
             return None
-        # Moving off "dialing" is what makes this single-use: a second socket for the
-        # same run — a replay, or Twilio retrying — is refused by the check above.
         run.status = "talking"
         run.answered_at = utcnow()
+        token = run.stream_token
         await session.commit()
         return (
             runner.build_instructions(scenario),
             scenario.max_duration_seconds or settings.testcall_max_duration_seconds,
+            token,
         )
-
-
-def _constant_time_equals(a: str, b: str) -> bool:
-    import hmac
-
-    return hmac.compare_digest(a, b)

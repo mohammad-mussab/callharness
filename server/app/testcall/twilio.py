@@ -22,14 +22,25 @@ class TwilioError(RuntimeError):
     """Twilio refused the request. The message carries their own wording."""
 
 
-def build_twiml(stream_url: str, digits: str | None, pause_seconds: float) -> str:
+def build_twiml(
+    stream_url: str, token: str, digits: str | None, pause_seconds: float
+) -> str:
     """The instructions Twilio runs on the called leg once somebody answers.
 
-    Order is the whole point. The keypad presses must happen BEFORE
-    ``<Connect><Stream>``, because a bidirectional media stream carries keypad
-    presses inward only — Twilio will not send a digit on behalf of our media
-    server once the stream is running. So the menu is navigated blind, on a timer,
-    and only then is the audio handed to us.
+    Two things here are not free choices.
+
+    **The keypad presses must come BEFORE ``<Connect><Stream>``.** A bidirectional
+    media stream carries keypad presses inward only — Twilio will not send a digit
+    on behalf of our media server once the stream is running. So the menu is
+    navigated blind, on a timer, and only then is the audio handed to us.
+
+    **The token goes in a ``<Parameter>``, never in the URL.** Twilio's docs are
+    explicit that the ``url`` attribute *does not support query string parameters*,
+    and it does not fail loudly: it silently opens the socket without them. That
+    cost a live call — our own authorization refused the tokenless connection with a
+    403 and Twilio hung up nine seconds in. ``<Parameter>`` values arrive in the
+    ``start`` message instead, which is why the token can only be checked after the
+    socket is accepted.
 
     ``<Connect>`` (not ``<Start>``) is deliberate: it is the two-way form, and it
     blocks until the socket closes, which is what keeps the call up while the
@@ -41,7 +52,13 @@ def build_twiml(stream_url: str, digits: str | None, pause_seconds: float) -> st
         # call connects, and a digit sent into the greeting is simply discarded.
         parts.append(f'<Pause length="{max(1, int(round(pause_seconds)))}"/>')
         parts.append(f'<Play digits="{escape(digit)}"/>')
-    parts.append(f'<Connect><Stream url="{escape(stream_url, {chr(34): "&quot;"})}"/></Connect>')
+    url = escape(stream_url, {chr(34): "&quot;"})
+    tok = escape(token, {chr(34): "&quot;"})
+    parts.append(
+        f'<Connect><Stream url="{url}">'
+        f'<Parameter name="token" value="{tok}"/>'
+        f"</Stream></Connect>"
+    )
     return "<Response>" + "".join(parts) + "</Response>"
 
 
@@ -109,6 +126,29 @@ async def hangup(call_sid: str) -> None:
             )
     except Exception as exc:  # noqa: BLE001 - hanging up is not worth an exception
         logger.warning("Twilio hangup for %s failed: %s", call_sid, exc)
+
+
+async def call_status(call_sid: str) -> str | None:
+    """Twilio's own word on what happened to a call. Best effort, never raises.
+
+    Used by the dial watchdog to say *why* a run is being closed: "no-answer" is a fact
+    about the number, while "completed" with no audio ever streamed points at the
+    websocket instead. Guessing between those two wastes a debugging session.
+    """
+    if not (call_sid and settings.twilio_account_sid and settings.twilio_auth_token):
+        return None
+    url = f"{API_ROOT}/Accounts/{settings.twilio_account_sid}/Calls/{call_sid}.json"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                url, auth=(settings.twilio_account_sid, settings.twilio_auth_token)
+            )
+        if resp.status_code >= 300:
+            return None
+        return str(resp.json().get("status") or "") or None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Twilio status lookup for %s failed: %s", call_sid, exc)
+        return None
 
 
 def _message(resp: httpx.Response) -> str:

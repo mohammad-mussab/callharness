@@ -78,6 +78,11 @@ MATCH_POLL_SECONDS = 5
 MATCH_BEFORE = timedelta(seconds=120)
 MATCH_AFTER = timedelta(seconds=120)
 
+# How long a run may sit on "dialing" before it is declared dead. Twilio gives up
+# ringing at 25s and the menu pauses add a few more, so 60s means a real connection has
+# had every chance while a failure is reported in under a minute instead of hanging.
+DIAL_WATCHDOG_SECONDS = 60.0
+
 JUDGE_SYSTEM_PROMPT = """You are grading one automated test call made against a live \
 voice agent. You are given the criteria the call had to satisfy and a transcript.
 
@@ -142,8 +147,12 @@ async def start_run(session: AsyncSession, scenario: TestScenario) -> TestRun:
     await session.refresh(run)
     _claim(run.id)
 
-    stream_url = f"{settings.testcall_stream_url.rstrip('/')}/{run.id}?token={run.stream_token}"
-    twiml = twilio.build_twiml(stream_url, scenario.dtmf_digits, scenario.dtmf_pause_seconds)
+    # No query string on this URL: Twilio's <Stream> drops them silently, so the token
+    # travels as a <Parameter> instead and is checked from the start message.
+    stream_url = f"{settings.testcall_stream_url.rstrip('/')}/{run.id}"
+    twiml = twilio.build_twiml(
+        stream_url, run.stream_token, scenario.dtmf_digits, scenario.dtmf_pause_seconds
+    )
     try:
         run.provider_call_sid = await twilio.place_call(scenario.to_number, twiml)
     except Exception as exc:  # noqa: BLE001
@@ -157,7 +166,40 @@ async def start_run(session: AsyncSession, scenario: TestScenario) -> TestRun:
 
     await session.commit()
     await session.refresh(run)
+    asyncio.create_task(_watch_dial(run.id))
     return run
+
+
+async def _watch_dial(run_id: str) -> None:
+    """Close out a run whose audio stream never arrived.
+
+    Without this the run sits on "dialing" until the stale-claim timeout, which is what
+    happened on the first live call: the token was being passed in the stream URL,
+    Twilio dropped it, our own check refused the socket — and the page showed a call
+    apparently still ringing for fifteen minutes. Nothing polls Twilio during a call, so
+    a failure that happens *instead* of streaming has no other way to be noticed.
+
+    Twilio is asked what became of the call so the message says something useful:
+    "completed" with no stream means the connection was refused or unreachable, while
+    "no-answer" or "busy" is a fact about the number.
+    """
+    await asyncio.sleep(DIAL_WATCHDOG_SECONDS)
+    async with SessionLocal() as session:
+        run = await session.get(TestRun, run_id)
+        if run is None or run.status != "dialing":
+            return  # streaming started, or somebody cancelled: not our business
+        twilio_status = await twilio.call_status(run.provider_call_sid or "")
+        run.status = "failed"
+        run.verdict = "error"
+        run.error = (
+            f"The call never streamed any audio. Twilio reports its status as "
+            f"'{twilio_status or 'unknown'}'."
+        )
+        run.verdict_reason = run.error
+        run.ended_at = utcnow()
+        await session.commit()
+    _release(run_id)
+    logger.warning("Test run %s closed by the dial watchdog", run_id)
 
 
 async def finish_run(run_id: str, result: BridgeResult) -> None:

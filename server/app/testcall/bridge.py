@@ -14,6 +14,7 @@ buffered but not yet played — the only way to make an interruption sound immed
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import time
@@ -30,6 +31,11 @@ logger = logging.getLogger("callharness.testcall.bridge")
 #
 # Italian, because that is what these agents speak. ("la metto in contatto" = "I'll put
 # you in touch"; "le passo" = "I'll pass you to"; "attenda in linea" = "hold the line".)
+# How long to wait for Twilio's `start` after the socket opens. It normally arrives
+# immediately; a socket that connects and then says nothing must not hold a paid call
+# open, and on a real failure this is what turns a hang into a reported error.
+START_TIMEOUT_SECONDS = 15.0
+
 TRANSFER_MARKERS = (
     "la metto in contatto",
     "la trasferisco",
@@ -58,10 +64,21 @@ async def run_bridge(
     websocket,
     instructions: str,
     max_duration_seconds: int,
+    expected_token: str,
     voice: str | None = None,
 ) -> BridgeResult:
-    """Talk to whoever answered, until somebody hangs up or the cap is reached."""
+    """Talk to whoever answered, until somebody hangs up or the cap is reached.
+
+    Begins by waiting for Twilio's ``start`` message, because that is the only place
+    the shared token can arrive — the URL cannot carry it (see ``build_twiml``). The
+    Realtime session is opened *after* that check, so an unauthorised socket never
+    costs an API session, and neither does a call Twilio abandons before streaming.
+    """
     result = BridgeResult()
+
+    if not await _await_authorized_start(websocket, expected_token, result):
+        return result
+
     session = RealtimeSession(instructions=instructions, voice=voice)
     try:
         await session.connect()
@@ -84,12 +101,7 @@ async def run_bridge(
             except ValueError:
                 continue
             event = message.get("event")
-            if event == "start":
-                result.stream_sid = message.get("streamSid") or (
-                    message.get("start") or {}
-                ).get("streamSid")
-                result.answered = True
-            elif event == "media":
+            if event == "media":
                 payload = (message.get("media") or {}).get("payload")
                 if payload:
                     try:
@@ -178,6 +190,51 @@ async def run_bridge(
         await asyncio.gather(*tasks, return_exceptions=True)
         await session.close()
     return result
+
+
+async def _await_authorized_start(websocket, expected_token: str, result: BridgeResult) -> bool:
+    """Read frames until Twilio's ``start``, and check the token it carries.
+
+    Twilio sends ``connected`` first and may send nothing else for a moment, so this
+    reads past anything that is not ``start`` rather than assuming an order. The wait
+    is bounded: a socket that connects and then says nothing must not hold a call open.
+    """
+    deadline = time.monotonic() + START_TIMEOUT_SECONDS
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            result.error = "Twilio opened the audio socket but never sent a start message."
+            return False
+        try:
+            raw = await asyncio.wait_for(websocket.receive_text(), timeout=remaining)
+        except asyncio.TimeoutError:
+            result.error = "Twilio opened the audio socket but never sent a start message."
+            return False
+        except Exception:  # noqa: BLE001 - the socket closed before streaming began
+            result.error = "Twilio closed the audio socket before the call started."
+            return False
+        try:
+            message = json.loads(raw)
+        except ValueError:
+            continue
+        if message.get("event") != "start":
+            continue
+
+        start = message.get("start") or {}
+        token = str((start.get("customParameters") or {}).get("token") or "")
+        if not (token and hmac.compare_digest(token, expected_token)):
+            # Deliberately specific: the token going missing is exactly what happens
+            # when it is put in the stream URL, which Twilio silently drops.
+            result.error = (
+                "The audio socket did not carry the expected token "
+                f"({'wrong value' if token else 'no token at all'}); connection refused."
+            )
+            logger.warning("Refused a test call stream: %s", result.error)
+            return False
+
+        result.stream_sid = message.get("streamSid") or start.get("streamSid")
+        result.answered = True
+        return True
 
 
 def _is_transfer(text: str) -> bool:

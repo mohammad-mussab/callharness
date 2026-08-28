@@ -32,6 +32,72 @@ function isSendable(g: KnowledgeGap) {
   return g.status === "confirmed_missing" && !g.sent_batch;
 }
 
+/** WHAT THE VIEW DROPDOWN DOES, AND WHY IT IS NOT A CLIENT-SIDE FILTER.
+ *
+ *  `statuses` is sent to the server as `?status=`, so the narrowing happens BEFORE the
+ *  row cap. That ordering is the entire fix. The server ranks rows newest-first as its
+ *  last tiebreak, and a verified record is by definition an older one, so verified rows
+ *  sink to the bottom of the list — measured on the live Lazio database, 133 of 148
+ *  records already proved missing sat past rank position 500 and were being thrown away
+ *  before the browser ever saw them. Filtering the payload could not have shown them.
+ *
+ *  The default view sends no filter at all, so the page keeps the layout people already
+ *  use: a working list plus the collapsed sections. Every other view is a flat list of
+ *  exactly one thing.
+ */
+const VIEWS: { key: string; label: string; statuses: string[]; blurb?: string }[] = [
+  { key: "all", label: "Everything", statuses: [] },
+  {
+    key: "confirmed_missing",
+    label: "Verified missing — ready to report",
+    statuses: ["confirmed_missing"],
+    blurb:
+      "Re-asked against the real lookup API, in several wordings, and nothing came back. These are the only records that may be sent to the customer. Ones already sent carry a batch stamp and stay out of the copied report.",
+  },
+  {
+    key: "not_verified",
+    label: "Not checked yet",
+    statuses: ["not_verified"],
+    blurb:
+      "Nobody has re-asked the lookup about these, so they are the judge's word alone. Group them first, then verify — an unverified record is a guess, not a finding.",
+  },
+  {
+    key: "found_in_source",
+    label: "Found in source — our lookup failed",
+    statuses: ["found_in_source"],
+    blurb:
+      "The record IS in the database; retrieval missed it during the call. These are engineering bugs on our side, not records for the customer to add.",
+  },
+  {
+    key: "sent",
+    label: "Sent — waiting on the customer",
+    statuses: ["sent"],
+    blurb:
+      "Already reported. Re-checking one is how you find out whether it has been added yet: if the record turns up it moves to “Added — confirmed”, and if it is still missing it stays here rather than rejoining the report.",
+  },
+  {
+    key: "added",
+    label: "Added",
+    statuses: ["added", "added_confirmed"],
+    blurb:
+      "“Added — confirmed” means we asked the source again and it answered. “Added — not re-checked” means somebody marked it by hand and nothing has been proved yet.",
+  },
+  {
+    key: "verify_error",
+    label: "Check failed",
+    statuses: ["verify_error"],
+    blurb:
+      "The lookup never completed — endpoint down, wrong tool name, timeout — so nothing was learned about the customer's data. Fix the probe in Analysis Settings and re-check.",
+  },
+  {
+    key: "bad_question",
+    label: "Question not usable",
+    statuses: ["bad_question"],
+    blurb:
+      "Built from mis-heard speech, so it came back empty because it is nonsense rather than because the data is absent. Nobody can add a record for it — open the call and listen.",
+  },
+];
+
 export default function GapsPage() {
   const [agent, setAgent] = useState("");
   const [days, setDays] = useState("7");
@@ -44,9 +110,24 @@ export default function GapsPage() {
   const [plan, setPlan] = useState<GapVerifyPlan | null>(null);
   const [planning, setPlanning] = useState(false);
   const [verifyingOne, setVerifyingOne] = useState<string | null>(null);
+  const [view, setView] = useState("all");
 
-  const params = new URLSearchParams({ days, min_count: minCount });
+  const activeView = VIEWS.find((v) => v.key === view) ?? VIEWS[0];
+  const filtered = activeView.statuses.length > 0;
+
+  // `limit` is sent explicitly. Leaving it to the server's default is what let the cap
+  // apply invisibly: the live history is already past 1,000 rows once every grouped
+  // record is listed regardless of age, and a record dropped off the end of this list is
+  // a record the customer never hears about.
+  //
+  // 2000, not the server's new 5000 ceiling, ON PURPOSE. This dashboard is routinely run
+  // against a backend that has not been redeployed yet (web/.env.local forwards to the
+  // VM), and the older endpoint validates `limit` at `le=2000` — asking for more gets a
+  // 422 and takes the whole page down over a parameter it does not need. `total_rows`
+  // says when 2000 is not enough, which is the honest way to find out.
+  const params = new URLSearchParams({ days, min_count: minCount, limit: "2000" });
   if (agent) params.set("agent_id", agent);
+  if (filtered) params.set("status", activeView.statuses.join(","));
 
   const { data: raw, isLoading, mutate } = useSWR<KnowledgeGaps>(
     `/api/v1/analytics/knowledge-gaps?${params}`,
@@ -92,7 +173,21 @@ export default function GapsPage() {
     })),
     needs_review: raw.needs_review ?? [],
     ungrouped_count: raw.ungrouped_count ?? 0,
+    total_rows: raw.total_rows ?? (raw.groups ?? []).length,
+    status_filter: raw.status_filter ?? [],
   };
+
+  // An older backend has no `status` param and no `status_filter`, so it answers a
+  // filtered request with the whole unfiltered list. Saying "these are all verified" over
+  // a list that is mostly unverified is the worst thing this page could do, so detect the
+  // disagreement and say so instead of rendering it.
+  const filterIgnored =
+    filtered && !!raw && (raw.status_filter ?? []).length === 0;
+
+  // Rows the server matched before `limit` cut them. Shown whenever it disagrees with
+  // what arrived: a truncated list that looks complete is exactly how 133 verified
+  // records stayed invisible.
+  const truncated = !!data && data.total_rows > data.groups.length;
 
   // Only meaningful once something has been merged: before that every row is one call
   // and every count is 1, so the filter would empty the page rather than narrow it.
@@ -306,6 +401,19 @@ export default function GapsPage() {
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
+        {/* First control on the page, because "where did the verified ones go" is the
+            question people arrive with. Filters on the SERVER — see VIEWS. */}
+        <select
+          value={view}
+          onChange={(e) => setView(e.target.value)}
+          className={`${selectClass} font-medium text-zinc-200`}
+        >
+          {VIEWS.map((v) => (
+            <option key={v.key} value={v.key}>
+              {v.label}
+            </option>
+          ))}
+        </select>
         <select value={agent} onChange={(e) => setAgent(e.target.value)} className={selectClass}>
           <option value="">All regions</option>
           {overview?.agents.map((a) => (
@@ -343,7 +451,7 @@ export default function GapsPage() {
                 : `Group duplicates (${data.ungrouped_count})`}
             </button>
           )}
-          {verifiable.length > 0 && (
+          {verifiable.length > 0 && !filtered && (
             <button
               onClick={askPlan}
               disabled={planning || running || !!verifyBlocked}
@@ -415,6 +523,15 @@ export default function GapsPage() {
             {plan.groups === 1 ? "" : "s"} — about <strong>{plan.requests}</strong> requests
             to {plan.sources.join(" and ") || "the configured sources"}, plus two LLM calls
             per record on our side.
+          </div>
+          {/* The list above shows every grouped record regardless of age; the RUN is still
+              bounded by the date selector, because widening it would spend more of the
+              customer's API budget than the button appears to promise. Said out loud so the
+              two numbers cannot be mistaken for each other. */}
+          <div className="text-xs text-amber-300/80">
+            Only records whose calls fall in the selected window (
+            {days === "1" ? "last 24 hours" : `last ${days} days`}) are included — the list
+            above is not limited by that.
           </div>
           <div className="text-xs text-amber-300/80">
             That service also answers live phone calls and has no rate limiting, so the run
@@ -536,16 +653,50 @@ export default function GapsPage() {
         </div>
       )}
 
-      {isLoading && !data && <p className="text-sm text-zinc-500">Loading…</p>}
-
-      {data && data.calls_scanned === 0 && (
-        <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-8 text-center text-sm text-zinc-500">
-          No calls in this window yet.
+      {/* The backend is answering the filter as if it were not there. Refusing to render
+          the rows is deliberate: a list labelled "verified missing" that is actually the
+          whole unfiltered list is a false claim about the customer's database. */}
+      {filterIgnored && (
+        <div className="rounded-lg border border-amber-900/60 bg-amber-950/20 p-3 text-sm text-amber-200">
+          <strong className="font-medium">This backend cannot filter by status.</strong>{" "}
+          It ignored <code className="text-amber-300/80">?status=</code> and would return
+          every record regardless of the view — so the list is not shown rather than
+          mislabelled. Deploy the server, or point{" "}
+          <code className="text-amber-300/80">CALLHARNESS_API_URL</code> at one that has
+          it. “Everything” still works.
         </div>
       )}
 
-      {data && data.calls_scanned > 0 && (
+      {/* Rows the server matched but did not send. This is the notice whose absence let
+          133 of 148 verified records stay invisible while the page looked complete. */}
+      {truncated && !filterIgnored && (
+        <div className="rounded-lg border border-amber-900/60 bg-amber-950/20 p-3 text-sm text-amber-200">
+          Showing <strong>{data!.groups.length}</strong> of{" "}
+          <strong>{data!.total_rows}</strong> matching records — the rest were cut by the
+          row cap. Narrow the view or the region to see them; records past the cut are
+          also missing from the copied report.
+        </div>
+      )}
+
+      {isLoading && !data && <p className="text-sm text-zinc-500">Loading…</p>}
+
+      {/* `calls_scanned` counts the WINDOW, but grouped records are listed regardless of
+          age — so gating the list on it would hide all 148 verified records the moment the
+          window happened to be quiet, which is the same bug in a new place. Both
+          conditions have to be empty before the page claims there is nothing here. */}
+      {data && data.calls_scanned === 0 && data.groups.length === 0 && (
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-8 text-center text-sm text-zinc-500">
+          {filtered ? "No records have this status." : "No calls in this window yet."}
+        </div>
+      )}
+
+      {data && (data.calls_scanned > 0 || data.groups.length > 0) && (
         <>
+          {/* Tiles only in the unfiltered view. Two of the three count the loaded rows, so
+              under a filter "Verified missing: 0" would be an artefact of the dropdown
+              rather than a fact about the database — which is the exact confusion this
+              whole change exists to remove. */}
+          {!filtered && (
           <div className="grid gap-3 sm:grid-cols-3">
             <div className="rounded-xl border border-amber-900/60 bg-amber-950/20 p-4">
               <div className="text-xs uppercase tracking-wide text-amber-500/80">
@@ -585,8 +736,48 @@ export default function GapsPage() {
               </div>
             </div>
           </div>
+          )}
 
-          {open.length === 0 ? (
+          {/* FILTERED: one flat list of exactly what was asked for. The sectioned layout
+              below is for the unfiltered view — under a filter it would put a record into
+              the main list only if its status happened to be one of OPEN_STATUSES, which
+              is how "Found in source" ended up as a collapsed one-line toggle underneath
+              500 rows and effectively unreachable. */}
+          {filtered && !filterIgnored && (
+            <div className="space-y-3">
+              <div>
+                <h2 className="text-sm font-semibold text-zinc-200">
+                  {activeView.label} ({data.total_rows})
+                </h2>
+                {activeView.blurb && (
+                  <p className="max-w-3xl text-xs text-zinc-500">{activeView.blurb}</p>
+                )}
+              </div>
+              {groups.length === 0 ? (
+                <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-6 text-center text-sm text-zinc-500">
+                  No records have this status.
+                </div>
+              ) : (
+                <ol className="space-y-2">
+                  {groups.map((g, i) => (
+                    <GapRow
+                      key={g.group_id ?? g.examples[0]?.call_id ?? i}
+                      gap={g}
+                      index={i}
+                      busy={verifyingOne === g.group_id}
+                      disabled={running || verifyingOne !== null}
+                      backendReady={backendHasVerification}
+                      onUngroup={ungroup}
+                      onVerify={verifyOne}
+                      onStatus={setStatus}
+                    />
+                  ))}
+                </ol>
+              )}
+            </div>
+          )}
+
+          {!filtered && (open.length === 0 ? (
             <div className="rounded-xl border border-emerald-900/50 bg-emerald-950/20 p-6 text-center text-sm text-emerald-300">
               Nothing left to check or report in this window.
             </div>
@@ -606,8 +797,10 @@ export default function GapsPage() {
                 />
               ))}
             </ol>
-          )}
+          ))}
 
+          {!filtered && (
+          <>
           <GapSection
             title="Found in the source — our lookup failed"
             blurb="The record IS in the database; retrieval missed it on the call. These are engineering bugs on our side, not records for the customer to add, so they are kept out of the report."
@@ -655,7 +848,12 @@ export default function GapsPage() {
             disabled={running || verifyingOne !== null}
             backendReady={backendHasVerification}
           />
+          </>
+          )}
 
+          {/* Kept in every view. It is not a status — these rows have no GapGroup at all —
+              and it is the one section a filter can never surface, so hiding it behind the
+              dropdown would recreate the problem in a new place. */}
           {data.needs_review.length > 0 && (
             <div className="space-y-2 pt-2">
               <div>

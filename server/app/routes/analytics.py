@@ -93,17 +93,56 @@ def _range_filter(query, date_from: datetime | None, date_to: datetime | None):
     return query
 
 
+def _parse_status_filter(raw: str | None) -> set[str]:
+    """The `status=` query param as a set of gap statuses.
+
+    Rejects an unknown status rather than ignoring it. A silently-dropped filter returns
+    the unfiltered list, which looks like "every one of these has that status" — and on
+    this page that reads as a claim about somebody else's database, so a typo must fail
+    loudly. `not_verified` is spelled out in gap_verification.GAP_STATUSES and covers the
+    rows with no GapGroup at all, whose status is synthesised as exactly that.
+    """
+    if not raw or not raw.strip():
+        return set()
+    wanted = {part.strip() for part in raw.split(",") if part.strip()}
+    unknown = sorted(wanted - set(gv.GAP_STATUSES))
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unknown gap status: {', '.join(unknown)}. "
+                f"Allowed: {', '.join(gv.GAP_STATUSES)}."
+            ),
+        )
+    return wanted
+
+
 @router.get("/knowledge-gaps", response_model=KnowledgeGapsOut)
 async def knowledge_gaps(
     session: AsyncSession = Depends(get_session),
     agent_id: str | None = None,
     days: int = Query(default=7, ge=1, le=365),
     min_count: int = Query(default=1, ge=1),
+    # Comma-separated verification statuses, e.g. "confirmed_missing" or
+    # "added,added_confirmed". Empty means every status.
+    #
+    # WHY THIS IS A SERVER PARAM AND NOT A FILTER IN THE BROWSER. The rank key below
+    # falls back to newest-first, and 154 of the live Lazio deployment's 172 verified
+    # records are single-member groups, so they tie on every earlier key and sink to the
+    # bottom of the list — where `limit` throws them away. Measured on production: 133 of
+    # 148 `confirmed_missing` records sat past rank position 500, so a filter applied to
+    # the returned payload could only ever show 15 of them however the dropdown was set.
+    # The filter has to run BEFORE the cut, which means it has to run here.
+    status: str | None = Query(
+        default=None,
+        description="Comma-separated gap statuses to include; omit for all.",
+    ),
     # Ungrouped, every gap-hitting call is its own row — 211 of them over the live Lazio
     # history at the time of writing, against the 50 this used to default to. A cap below
     # the real number silently drops missing records off the end of the customer's
-    # report, which is the one failure this page cannot afford.
-    limit: int = Query(default=500, le=2000),
+    # report, which is the one failure this page cannot afford. `total_rows` in the
+    # response says when it happened anyway.
+    limit: int = Query(default=1000, le=5000),
 ):
     """Questions the agent couldn't answer because the record is missing.
 
@@ -117,7 +156,11 @@ async def knowledge_gaps(
     different Roman branches into one line on live data — knowledge_gaps.py has the
     measurement. A row's `count` is therefore 1 until it has been grouped, which is why
     `min_count` is only meaningful afterwards.
+
+    `days` DOES NOT BOUND WHICH GROUPED RECORDS ARE LISTED, only which calls are scanned
+    for the statistics and for the ungrouped working list. See the second query below.
     """
+    wanted_statuses = _parse_status_filter(status)
     since = utcnow() - timedelta(days=days)
     query = (
         select(Call)
@@ -129,19 +172,64 @@ async def knowledge_gaps(
         query = query.where(Call.agent_id == agent_id)
     calls = (await session.execute(query)).scalars().all()
 
-    occurrences: list[dict[str, Any]] = []
-    for call in calls:
-        for gap in extract_gaps(call):
-            occurrences.append(
-                {
-                    **gap,
-                    "call": call,
-                    "outcome": compute_outcome(call.success, call.transferred),
-                }
-            )
+    # WHY GROUPED RECORDS IGNORE THE WINDOW.
+    #
+    # A verification verdict lives on the GapGroup row, which has no date and no
+    # lifecycle of its own — a record proved missing stays missing until the customer
+    # adds it. But the report reached those rows only THROUGH their calls, so a record
+    # aged out of `days` and vanished along with its verdict. On the live Lazio database
+    # that was total, not partial: grouping last ran around 2026-08-17, every verified
+    # record's newest member call fell on or before that date, and every unverified one
+    # fell after it. So the default 7-day view returned 500 rows of which precisely zero
+    # were verified, and the "Verified missing" tile read 0 while 148 proven-missing
+    # records sat in the database.
+    #
+    # Hence a second query with no date bound, for calls the grouping pass has placed.
+    # The windowed set above still owns every statistic — `calls_scanned`,
+    # `calls_with_gaps`, `gap_call_rate` and `ungrouped_count` are all computed from it
+    # alone, or the headline percentage would silently acquire a different denominator
+    # from the list beneath it.
+    #
+    # GAP_NEEDS_REVIEW is excluded, so the "needs human review" section stays bounded by
+    # `days` as it always was. It is a review queue of unactionable questions rather than
+    # a record with a verdict to preserve — nothing about it is lost by ageing out, and an
+    # all-time queue is noise. Same exclusion, for the same reason, as
+    # gap_verification.eligible_calls_query().
+    grouped_query = (
+        select(Call)
+        .options(selectinload(Call.turns))
+        .where(Call.bucket == RECORD_MISSING_BUCKET)
+        .where(Call.gap_group_id.is_not(None))
+        .where(Call.gap_group_id != GAP_NEEDS_REVIEW)
+    )
+    if agent_id:
+        grouped_query = grouped_query.where(Call.agent_id == agent_id)
+    grouped_calls = (await session.execute(grouped_query)).scalars().all()
 
-    calls_with_gaps = len(occurrences)
-    ungrouped_count = sum(1 for o in occurrences if not o["call"].gap_group_id)
+    def occurrences_of(rows) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for call in rows:
+            for gap in extract_gaps(call):
+                out.append(
+                    {
+                        **gap,
+                        "call": call,
+                        "outcome": compute_outcome(call.success, call.transferred),
+                    }
+                )
+        return out
+
+    windowed = occurrences_of(calls)
+
+    # Statistics: the window only. A rate whose numerator could include calls from
+    # outside its own denominator is worse than no rate at all.
+    calls_with_gaps = len(windowed)
+    ungrouped_count = sum(1 for o in windowed if not o["call"].gap_group_id)
+
+    # The row list: the window plus every grouped record regardless of age. Keyed on call
+    # id because a grouped call inside the window is returned by both queries, and
+    # counting it twice would inflate a record's `count` and duplicate its example link.
+    occurrences = list({o["call"].id: o for o in windowed + occurrences_of(grouped_calls)}.values())
 
     # An ungrouped call is its own group, keyed on its id so it can never collide with a
     # stored "g<n>" and so the row is stable across reloads.
@@ -237,7 +325,20 @@ async def knowledge_gaps(
     def rank(group: dict[str, Any]) -> tuple:
         return (-group["count"], -group["transferred"], -group["examples"][0].started_at.timestamp())
 
-    ranked = sorted((g for g in groups if g["count"] >= min_count), key=rank)[:limit]
+    def keep(group: dict[str, Any]) -> bool:
+        if group["count"] < min_count:
+            return False
+        return not wanted_statuses or group["status"] in wanted_statuses
+
+    matching = [g for g in groups if keep(g)]
+    # Counted before the cut, and reported. `limit` exists to bound the payload, not to
+    # decide what the customer's report contains, so the page has to be able to tell the
+    # two apart.
+    total_rows = len(matching)
+    ranked = sorted(matching, key=rank)[:limit]
+    # Needs-review rows are always `not_verified`, so any narrower filter excludes the
+    # whole section rather than showing it unfiltered beside a filtered list.
+    needs_review = [g for g in needs_review if keep(g)]
     needs_review.sort(key=rank)
 
     return KnowledgeGapsOut(
@@ -251,6 +352,8 @@ async def knowledge_gaps(
         groups=[KnowledgeGapOut(**g) for g in ranked],
         needs_review=[KnowledgeGapOut(**g) for g in needs_review],
         ungrouped_count=ungrouped_count,
+        total_rows=total_rows,
+        status_filter=sorted(wanted_statuses),
     )
 
 

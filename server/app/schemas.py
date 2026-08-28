@@ -418,6 +418,19 @@ class KnowledgeGapsOut(BaseModel):
     # How many gaps in this window have never been through the grouping pass. The button
     # is only worth pressing when this is above zero.
     ungrouped_count: int = 0
+    # How many rows matched BEFORE `limit` cut the list, so the page can say "showing 500
+    # of 1022" instead of returning a truncated list that looks complete.
+    #
+    # This is not a nicety. The cap used to be applied silently, and because the rank key
+    # falls back to newest-first, every older single-member record sank into the discarded
+    # tail: 133 of 148 records already PROVEN missing against the live lookup API were
+    # unreachable at any filter setting, and unreportable, with nothing on the page saying
+    # so. A count that disagrees with `len(groups)` is the only cheap defence against that
+    # happening again the next time the history outgrows the cap.
+    total_rows: int = 0
+    # Which statuses were asked for, echoed back so the page can tell "nothing has this
+    # status" apart from "the filter was ignored by an older backend".
+    status_filter: list[str] = Field(default_factory=list)
 
 
 class GapGroupingOut(BaseModel):

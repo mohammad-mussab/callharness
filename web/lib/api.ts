@@ -226,6 +226,13 @@ export type KnowledgeGaps = {
   // counts, and out of the copied email.
   needs_review: KnowledgeGap[];
   ungrouped_count: number;
+  // How many rows matched before `limit` cut the list. When this exceeds groups.length
+  // the page is showing a truncated list and has to say so — a silent cut here once hid
+  // 133 of 148 already-verified records with nothing on the page to suggest it.
+  total_rows: number;
+  // The statuses the server actually filtered on. Echoed back so "nothing has this
+  // status" can be told apart from "an older backend ignored the parameter".
+  status_filter: string[];
 };
 
 export type GapGrouping = {

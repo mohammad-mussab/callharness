@@ -21,10 +21,10 @@ would be a vendor-specific field in a product meant to ship generically, and `me
 is exactly the free-form place agents already put their own identifiers.
 
 The value is stored as a **string**, not the integer Supabase returns. The search
-clause matches '"<q>"' with the quotes so a query for 144394 cannot also return a
-call whose `llm_token` happens to contain those digits -- and an unquoted JSON number
-would not match that pattern at all. Both halves have to agree; changing one without
-the other silently breaks the lookup.
+clause matches the value with its JSON quotes around it, so a query for 144394
+cannot also return a call whose `llm_token` happens to contain those digits -- and
+an unquoted JSON number would not match that pattern at all. Both halves have to
+agree; changing one without the other silently breaks the lookup.
 
 This is a backfill for history, not a permanent mechanism. The durable fix is one
 line in the agent's own `services/callharness_service.py`, adding `id_stat` to the
@@ -35,8 +35,7 @@ first-write-wins, so re-posting an existing call is discarded silently.
 Usage (from server/, venv active). Talks to the database directly, so on the VM run
 it beside the container:
 
-    python -m scripts.backfill_id_stat --supabase-url https://xxxx.supabase.co \
-        --supabase-key <service-role-key> --days 30 --dry-run
+    python -m scripts.backfill_id_stat --days 90 --dry-run
 
 Drop --dry-run once the sample lines look right. Safe to re-run: a call whose meta
 already holds the same id_stat is skipped, so the second run reports 0 updates.
@@ -59,59 +58,68 @@ from app.models import Call  # noqa: E402
 TABLE = "tb_stat"
 ID_COLUMN = "id_stat"
 CALL_ID_COLUMN = "call_id"
-CREATED_AT_COLUMN = "created_at"
 META_KEY = "id_stat"
-PAGE = 1000
+# How many uuids go into one `call_id=in.(...)` filter. The bound is URL length, not
+# Supabase: 150 uuids is a ~6KB query string, comfortably inside the 8KB most servers
+# accept, and each request is then an indexed lookup rather than a scan.
+CHUNK = 150
 
 
-async def fetch_mapping(
-    url: str, key: str, days: int | None, limit: int | None
-) -> dict[str, str]:
-    """{call_id: id_stat} straight from PostgREST, paged.
+async def fetch_mapping(url: str, key: str, call_ids: list[str]) -> dict[str, str]:
+    """{call_id: id_stat}, asked for by call_id rather than swept out of the table.
 
-    Only two columns are ever selected. tb_stat has ~46 of them and most carry patient
-    identity (name, date of birth, fiscal code, address); pulling the whole row to read
-    one number would put all of that on this machine for no reason.
+    The obvious implementation -- page through tb_stat and keep what matches -- does
+    not survive contact with the real table. tb_stat holds every region and predates
+    the CallHarness integration, so a 90-day window is 47,000+ rows against the 8,657
+    calls that could possibly match; nearly everything fetched is discarded. Worse,
+    deep `offset=` paging makes Postgres walk all the rows it is skipping, and
+    Supabase answered offset=47000 with a 500 (a statement timeout) rather than a
+    page -- so the sweep does not merely waste work, it fails outright.
+
+    Asking by call_id inverts that: each request is an indexed lookup on the ~150 ids
+    we actually hold, there is no offset to grow, and no unusable row is ever
+    transferred. It also means a call is matched however old its tb_stat row is,
+    because the query is driven by our rows rather than by a date on theirs.
+
+    Only two columns are ever selected. tb_stat has ~46 and most carry patient
+    identity (name, date of birth, fiscal code, address); pulling whole rows to read
+    one number would copy all of that onto this machine for nothing.
     """
     headers = {"apikey": key, "Authorization": f"Bearer {key}"}
-    params_base = {"select": f"{ID_COLUMN},{CALL_ID_COLUMN}", "order": f"{ID_COLUMN}.desc"}
-    if days is not None:
-        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-        params_base[CREATED_AT_COLUMN] = f"gte.{since}"
-
+    endpoint = f"{url.rstrip('/')}/rest/v1/{TABLE}"
     mapping: dict[str, str] = {}
-    offset = 0
+
     async with httpx.AsyncClient(timeout=60) as client:
-        while True:
-            want = PAGE if limit is None else min(PAGE, limit - len(mapping))
-            if want <= 0:
-                break
-            params = dict(params_base, limit=str(want), offset=str(offset))
-            resp = await client.get(f"{url.rstrip('/')}/rest/v1/{TABLE}", headers=headers, params=params)
+        for start in range(0, len(call_ids), CHUNK):
+            chunk = call_ids[start : start + CHUNK]
+            params = {
+                "select": f"{ID_COLUMN},{CALL_ID_COLUMN}",
+                CALL_ID_COLUMN: "in.(" + ",".join(chunk) + ")",
+            }
+            resp = await client.get(endpoint, headers=headers, params=params)
             resp.raise_for_status()
-            rows = resp.json()
-            if not rows:
-                break
-            for row in rows:
+            for row in resp.json():
                 call_id = row.get(CALL_ID_COLUMN)
                 stat = row.get(ID_COLUMN)
-                # A tb_stat row with no call_id cannot be joined to anything; the agent
-                # writes the uuid at call start, so this means the row predates that.
+                # A tb_stat row with no call_id cannot be joined to anything; the
+                # agent writes the uuid at call start, so such a row predates that.
                 if call_id and stat is not None:
                     mapping[str(call_id)] = str(stat)
-            offset += len(rows)
-            if len(rows) < want:
-                break
+            done = min(start + CHUNK, len(call_ids))
+            print(f"  looked up {done:,}/{len(call_ids):,}, matched {len(mapping):,}")
     return mapping
 
 
 async def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--supabase-url", default=os.getenv("SUPABASE_URL"))
-    ap.add_argument("--supabase-key", default=os.getenv("SUPABASE_SECRET_KEY") or os.getenv("SUPABASE_KEY"))
-    ap.add_argument("--days", type=int, default=None, help="only tb_stat rows this recent (default: all)")
-    ap.add_argument("--limit", type=int, default=None, help="cap on tb_stat rows read")
-    ap.add_argument("--agent", default=None, help="only update calls with this agent_id")
+    ap.add_argument(
+        "--supabase-key",
+        default=os.getenv("SUPABASE_SECRET_KEY") or os.getenv("SUPABASE_KEY"),
+    )
+    ap.add_argument("--days", type=int, default=None, help="only calls started this recently")
+    ap.add_argument("--limit", type=int, default=None, help="cap on calls, newest first")
+    ap.add_argument("--agent", default=None, help="only calls with this agent_id")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -119,22 +127,31 @@ async def main() -> int:
         print("Need --supabase-url and --supabase-key (or SUPABASE_URL / SUPABASE_SECRET_KEY).")
         return 2
 
-    print(f"Reading {TABLE} from Supabase...")
-    mapping = await fetch_mapping(args.supabase_url, args.supabase_key, args.days, args.limit)
-    print(f"  {len(mapping):,} rows with a call_id")
-    if not mapping:
-        return 0
-
     await init_db()
-    updated = skipped = unmatched = 0
+    updated = skipped = 0
     samples: list[str] = []
 
     async with SessionLocal() as session:
-        query = select(Call).where(Call.external_id.in_(list(mapping.keys())))
+        # Driven from our own calls, not from tb_stat -- see fetch_mapping's docstring.
+        query = select(Call).where(Call.external_id.is_not(None))
         if args.agent:
             query = query.where(Call.agent_id == args.agent)
+        if args.days is not None:
+            since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=args.days)
+            query = query.where(Call.started_at >= since)
+        query = query.order_by(Call.started_at.desc())
+        if args.limit is not None:
+            query = query.limit(args.limit)
         calls = (await session.execute(query)).scalars().all()
-        print(f"  {len(calls):,} of them exist in CallHarness")
+
+        print(f"{len(calls):,} CallHarness calls to look up.")
+        if not calls:
+            return 0
+
+        print(f"Asking {TABLE} for their {ID_COLUMN}...")
+        mapping = await fetch_mapping(
+            args.supabase_url, args.supabase_key, [c.external_id for c in calls]
+        )
 
         for call in calls:
             stat = mapping.get(call.external_id or "")
@@ -153,10 +170,14 @@ async def main() -> int:
             if len(samples) < 5:
                 samples.append(f"    id_stat {stat:>8}  ->  {call.id}  ({call.external_id})")
 
-        unmatched = len(mapping) - len(calls)
+        unmatched = len(calls) - len(mapping)
+        print()
         for line in samples:
             print(line)
-        print(f"\n  update {updated:,} | already correct {skipped:,} | in Supabase but not here {unmatched:,}")
+        print(
+            f"  update {updated:,} | already correct {skipped:,} "
+            f"| no {TABLE} row {unmatched:,}"
+        )
 
         if args.dry_run:
             print("\nDry run - nothing written. Re-run without --dry-run to apply.")

@@ -66,7 +66,7 @@ export default function CallsPage() {
         <input
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          placeholder="Search transcripts & summaries…"
+          placeholder="Search transcripts, or paste any call ID…"
           className="w-64 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-300 placeholder:text-zinc-600"
         />
         <select value={agent} onChange={(e) => { setAgent(e.target.value); setPage(0); }} className={selectClass}>

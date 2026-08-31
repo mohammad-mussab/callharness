@@ -3,7 +3,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
-from sqlalchemy import exists, func, or_, select
+from sqlalchemy import String, cast, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -189,7 +189,28 @@ async def list_calls(
         in_transcript = exists(
             select(Turn.id).where(Turn.call_id == Call.id, Turn.text.ilike(pattern))
         )
-        query = query.where(Call.summary.ilike(pattern) | in_transcript)
+        # One box, two kinds of input. Free text still searches the summary and the
+        # transcript; an *identifier* is matched exactly instead, because somebody
+        # holding an id minted by another system has nowhere else to paste it. A call
+        # carries at least four ids for the same conversation -- our surrogate `id`
+        # (what the URL shows), the agent's own uuid in `external_id`, and whatever the
+        # agent stashed in `meta` (Lazio sends its Supabase `tb_stat.id_stat`, an
+        # `interaction_id`, a booking code) -- and until this clause existed only the
+        # first of them could find a call at all.
+        #
+        # The meta match is a text scan: `meta` is free-form JSON, so there is no column
+        # to compare and no index to use. Matching '"<q>"' *with the quotes* is what
+        # keeps it honest -- it hits a whole JSON string value rather than a digit run
+        # buried inside some unrelated number, so searching 144394 cannot return a call
+        # whose llm_token happens to be 1443940. The corollary is that meta values must
+        # be stored as strings to be findable; see scripts/backfill_id_stat.py.
+        query = query.where(
+            Call.summary.ilike(pattern)
+            | in_transcript
+            | (Call.id == q)
+            | (Call.external_id == q)
+            | cast(Call.meta, String).ilike(f'%"{q}"%')
+        )
 
     total = (
         await session.execute(select(func.count()).select_from(query.subquery()))
@@ -204,11 +225,43 @@ async def list_calls(
     )
 
 
-async def _get_call(session: AsyncSession, call_id: str, with_turns: bool = False) -> Call:
-    query = select(Call).where(Call.id == call_id)
-    if with_turns:
-        query = query.options(selectinload(Call.turns))
-    call = (await session.execute(query)).scalar_one_or_none()
+async def _get_call(
+    session: AsyncSession,
+    call_id: str,
+    with_turns: bool = False,
+    with_evaluations: bool = False,
+) -> Call:
+    """Load a call by our id, or failing that by the agent's own `external_id`.
+
+    The fallback exists because the two ids name the same call but only one of them
+    appears in a URL, and it is the one nobody outside CallHarness has. Somebody
+    tracing a call from the agent's database or its raw log holds the agent's uuid;
+    pasting it into /calls/<uuid> used to 404, which reads as "no such call" when the
+    call is right there. Our own id is tried first so a real id can never be shadowed
+    by an agent that chose to reuse it as its external_id.
+
+    `external_id` is not unique-constrained (it is the sender's value, not ours), so
+    the fallback takes the newest match rather than raising on a duplicate -- a
+    lookup helper is the wrong place to fail over somebody else's id hygiene.
+    """
+    def _build(where):
+        query = select(Call).where(where)
+        if with_turns:
+            query = query.options(selectinload(Call.turns))
+        if with_evaluations:
+            # Eager, not lazy: these relationships default to lazy="select", and an
+            # implicit lazy load on an AsyncSession raises MissingGreenlet rather than
+            # quietly issuing the query.
+            query = query.options(selectinload(Call.evaluation_results))
+        return query
+
+    call = (await session.execute(_build(Call.id == call_id))).scalar_one_or_none()
+    if call is None:
+        call = (
+            await session.execute(
+                _build(Call.external_id == call_id).order_by(Call.started_at.desc()).limit(1)
+            )
+        ).scalars().first()
     if call is None:
         raise HTTPException(status_code=404, detail="Call not found")
     return call
@@ -216,14 +269,7 @@ async def _get_call(session: AsyncSession, call_id: str, with_turns: bool = Fals
 
 @router.get("/{call_id}", response_model=CallDetailOut)
 async def get_call(call_id: str, session: AsyncSession = Depends(get_session)):
-    query = (
-        select(Call)
-        .where(Call.id == call_id)
-        .options(selectinload(Call.turns), selectinload(Call.evaluation_results))
-    )
-    call = (await session.execute(query)).scalar_one_or_none()
-    if call is None:
-        raise HTTPException(status_code=404, detail="Call not found")
+    call = await _get_call(session, call_id, with_turns=True, with_evaluations=True)
     await _resolve_log_once(session, call)
     out = _to_out(call, detail=True)
     out.evaluations = [

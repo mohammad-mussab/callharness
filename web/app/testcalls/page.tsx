@@ -33,7 +33,8 @@ export default function TestCallsPage() {
     { refreshInterval: (data) => (data?.some((r) => ACTIVE.has(r.status)) ? 3000 : 20000) }
   );
 
-  const [showForm, setShowForm] = useState(false);
+  // null = form closed, "new" = creating, a scenario = editing that one.
+  const [editing, setEditing] = useState<TestScenario | "new" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<number | null>(null);
   const [open, setOpen] = useState<string | null>(null);
@@ -77,10 +78,10 @@ export default function TestCallsPage() {
           </p>
         </div>
         <button
-          onClick={() => setShowForm((v) => !v)}
+          onClick={() => setEditing((v) => (v ? null : "new"))}
           className="shrink-0 rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500"
         >
-          {showForm ? "Cancel" : "+ New scenario"}
+          {editing ? "Cancel" : "+ New scenario"}
         </button>
       </div>
 
@@ -114,10 +115,15 @@ export default function TestCallsPage() {
         </div>
       )}
 
-      {showForm && (
+      {editing && (
         <ScenarioForm
+          // Remounts when you switch between scenarios, so the fields reload rather
+          // than keeping the previously edited scenario's values.
+          key={editing === "new" ? "new" : editing.id}
+          scenario={editing === "new" ? null : editing}
+          onCancel={() => setEditing(null)}
           onDone={async () => {
-            setShowForm(false);
+            setEditing(null);
             await mutateScenarios();
           }}
         />
@@ -160,6 +166,15 @@ export default function TestCallsPage() {
                 title={running ? "A call is already in progress" : "Place the call now"}
               >
                 {busy === s.id ? "Dialling…" : "Call now"}
+              </button>
+              <button
+                onClick={() => {
+                  setEditing(s);
+                  window.scrollTo({ top: 0, behavior: "smooth" });
+                }}
+                className="rounded-lg border border-zinc-800 px-2 py-1.5 text-sm text-zinc-400 hover:text-zinc-100"
+              >
+                Edit
               </button>
               <button
                 onClick={() => remove(s)}
@@ -337,36 +352,56 @@ function VerdictBadge({ run }: { run: TestRun }) {
   );
 }
 
-function ScenarioForm({ onDone }: { onDone: () => Promise<void> }) {
-  const [name, setName] = useState("");
-  const [agentId, setAgentId] = useState("");
-  const [toNumber, setToNumber] = useState("");
-  const [digits, setDigits] = useState("");
-  const [pause, setPause] = useState("4");
-  const [persona, setPersona] = useState("");
-  const [criteria, setCriteria] = useState("");
+function ScenarioForm({
+  scenario,
+  onDone,
+  onCancel,
+}: {
+  scenario: TestScenario | null;
+  onDone: () => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState(scenario?.name ?? "");
+  const [agentId, setAgentId] = useState(scenario?.agent_id ?? "");
+  const [toNumber, setToNumber] = useState(scenario?.to_number ?? "");
+  const [digits, setDigits] = useState(scenario?.dtmf_digits ?? "");
+  const [pause, setPause] = useState(String(scenario?.dtmf_pause_seconds ?? 4));
+  const [persona, setPersona] = useState(scenario?.persona ?? "");
+  const [criteria, setCriteria] = useState((scenario?.criteria ?? []).join("\n"));
+  const [maxSeconds, setMaxSeconds] = useState(
+    scenario?.max_duration_seconds ? String(scenario.max_duration_seconds) : ""
+  );
+  const [enabled, setEnabled] = useState(scenario?.enabled ?? true);
   const [error, setError] = useState<string | null>(null);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    // Every field goes in both directions. A save that omitted one would not leave it
+    // alone — the API replaces the whole scenario, so a missing field is a reset.
+    const body = {
+      name,
+      agent_id: agentId,
+      to_number: toNumber,
+      dtmf_digits: digits || null,
+      dtmf_pause_seconds: Number(pause) || 4,
+      persona,
+      criteria: criteria
+        .split("\n")
+        .map((c) => c.trim())
+        .filter(Boolean),
+      max_duration_seconds: maxSeconds ? Number(maxSeconds) : null,
+      enabled,
+    };
     try {
-      await apiSend("/api/v1/testcalls/scenarios", "POST", {
-        name,
-        agent_id: agentId,
-        to_number: toNumber,
-        dtmf_digits: digits || null,
-        dtmf_pause_seconds: Number(pause) || 4,
-        persona,
-        criteria: criteria
-          .split("\n")
-          .map((c) => c.trim())
-          .filter(Boolean),
-        enabled: true,
-      });
+      if (scenario) {
+        await apiSend(`/api/v1/testcalls/scenarios/${scenario.id}`, "PUT", body);
+      } else {
+        await apiSend("/api/v1/testcalls/scenarios", "POST", body);
+      }
       await onDone();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not save.");
+      setError(e instanceof Error ? e.message.replace(/^API error \d+: /, "") : "Could not save.");
     }
   }
 
@@ -375,67 +410,137 @@ function ScenarioForm({ onDone }: { onDone: () => Promise<void> }) {
       onSubmit={submit}
       className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900/60 p-4"
     >
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-medium text-zinc-200">
+          {scenario ? `Editing “${scenario.name}”` : "New scenario"}
+        </h3>
+        {scenario && (
+          <label className="flex items-center gap-2 text-xs text-zinc-500">
+            <input
+              type="checkbox"
+              checked={enabled}
+              onChange={(e) => setEnabled(e.target.checked)}
+              className="accent-indigo-500"
+            />
+            Enabled
+          </label>
+        )}
+      </div>
+
       <div className="grid gap-3 sm:grid-cols-2">
-        <input
-          className={inputClass}
-          placeholder="Name — e.g. Opening hours, Milan branch"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          required
-        />
-        <input
-          className={inputClass}
-          placeholder="Region — must match exactly: Lazio, Lombardia, Trentino"
-          value={agentId}
-          onChange={(e) => setAgentId(e.target.value)}
-          required
-        />
-        <input
-          className={inputClass}
-          placeholder="Number to call — e.g. +3902…"
-          value={toNumber}
-          onChange={(e) => setToNumber(e.target.value)}
-          required
-        />
-        <div className="flex gap-3">
+        <Field label="Name">
           <input
             className={inputClass}
-            placeholder="Menu keys — e.g. 2,2"
-            value={digits}
-            onChange={(e) => setDigits(e.target.value)}
+            placeholder="e.g. Opening hours, Milan branch"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            required
           />
+        </Field>
+        <Field label="Region" hint="must match the agent exactly">
           <input
             className={inputClass}
-            placeholder="Seconds"
-            value={pause}
-            onChange={(e) => setPause(e.target.value)}
+            placeholder="Lazio · Lombardia · Trentino · Piemonte"
+            value={agentId}
+            onChange={(e) => setAgentId(e.target.value)}
+            required
           />
+        </Field>
+        <Field label="Number to call">
+          <input
+            className={inputClass}
+            placeholder="+3902…"
+            value={toNumber}
+            onChange={(e) => setToNumber(e.target.value)}
+            required
+          />
+        </Field>
+        <div className="grid grid-cols-3 gap-2">
+          <Field label="Menu keys">
+            <input
+              className={inputClass}
+              placeholder="2,2"
+              value={digits}
+              onChange={(e) => setDigits(e.target.value)}
+            />
+          </Field>
+          <Field label="Gap (s)">
+            <input
+              className={inputClass}
+              placeholder="4"
+              value={pause}
+              onChange={(e) => setPause(e.target.value)}
+            />
+          </Field>
+          <Field label="Max call (s)" hint="blank = default">
+            <input
+              className={inputClass}
+              placeholder="180"
+              value={maxSeconds}
+              onChange={(e) => setMaxSeconds(e.target.value)}
+            />
+          </Field>
         </div>
       </div>
-      <textarea
-        className={`${inputClass} h-24`}
-        placeholder="Who is calling and what do they want? Write it in the language the agent speaks. e.g. Sei un paziente che chiama per sapere gli orari di apertura della sede di via…"
-        value={persona}
-        onChange={(e) => setPersona(e.target.value)}
-        required
-      />
-      <textarea
-        className={`${inputClass} h-24`}
-        placeholder={"What has to be true afterwards? One per line.\nThe agent gave the opening hours\nThe agent did not transfer the call"}
-        value={criteria}
-        onChange={(e) => setCriteria(e.target.value)}
-      />
+      <Field label="Who is calling, and what do they want?" hint="write it in the agent's language">
+        <textarea
+          className={`${inputClass} h-28`}
+          placeholder="Sei un paziente che chiama per sapere gli orari di apertura della sede di via…"
+          value={persona}
+          onChange={(e) => setPersona(e.target.value)}
+          required
+        />
+      </Field>
+      <Field label="What has to be true afterwards?" hint="one per line">
+        <textarea
+          className={`${inputClass} h-24`}
+          placeholder={"The agent gave the opening hours\nThe agent did not transfer the call"}
+          value={criteria}
+          onChange={(e) => setCriteria(e.target.value)}
+        />
+      </Field>
       <p className="text-xs text-zinc-600">
         The keys are pressed on a timer before the conversation starts — Twilio cannot send
         them once the call is connected. If the menu&apos;s wording changes, adjust the seconds.
       </p>
       {error && <p className="text-sm text-red-400">{error}</p>}
-      <button
-        type="submit"
-        className="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500"
-      >
-        Save scenario
-      </button>
+      <div className="flex items-center gap-2">
+        <button
+          type="submit"
+          className="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500"
+        >
+          {scenario ? "Save changes" : "Create scenario"}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="rounded-lg border border-zinc-800 px-3 py-1.5 text-sm text-zinc-400 hover:text-zinc-100"
+        >
+          Cancel
+        </button>
+      </div>
     </form>
+  );
+}
+
+/** Label above a control. Placeholders vanish once a field has a value, which makes a
+ *  prefilled edit form unreadable — so editing needs real labels, not hints. */
+function Field({
+  label,
+  hint,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <label className="block space-y-1">
+      <span className="text-xs text-zinc-500">
+        {label}
+        {hint && <span className="text-zinc-600"> — {hint}</span>}
+      </span>
+      {children}
+    </label>
   );
 }

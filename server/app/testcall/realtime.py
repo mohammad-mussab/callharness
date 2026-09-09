@@ -81,11 +81,27 @@ class RealtimeSession:
                     "audio": {
                         "input": {
                             "format": {"type": "audio/pcmu"},
-                            # Server-side voice activity detection: the model decides
-                            # when the agent has stopped talking and answers on its own.
-                            # Without it nothing would ever prompt a reply, because
-                            # there is no user pressing anything on this end.
-                            "turn_detection": {"type": "server_vad"},
+                            # Voice detection stays ON — we need to know when the far
+                            # end starts and stops talking — but it must NOT answer by
+                            # itself. `create_response: false` is the whole fix for the
+                            # caller talking over the agent.
+                            #
+                            # Why prompting could not fix it: when detection commits a
+                            # turn, the API generates a response, and the model has no
+                            # way to return silence. Told to stay quiet it said
+                            # "[stays silent]" out loud instead — three separate local
+                            # runs, with the instruction worded three ways. The turn has
+                            # to not be handed over in the first place.
+                            #
+                            # So the bridge decides when the agent has finished and asks
+                            # for a response explicitly. `interrupt_response: false` for
+                            # the same reason: our own barge-in handling is deliberate,
+                            # not something detection should trigger.
+                            "turn_detection": {
+                                "type": "server_vad",
+                                "create_response": False,
+                                "interrupt_response": False,
+                            },
                             # Transcribing the agent's side is the only way the run has
                             # a record of what it heard when the production agent fails
                             # to post its own call row — which is itself a test result.
@@ -131,6 +147,10 @@ class RealtimeSession:
     async def send_audio(self, payload_b64: str) -> None:
         """Forward one Twilio media frame, still base64, still µ-law."""
         await self._send({"type": "input_audio_buffer.append", "audio": payload_b64})
+
+    async def create_response(self) -> None:
+        """Speak now. Nothing else makes the caller talk — see `turn_detection` above."""
+        await self._send({"type": "response.create"})
 
     async def cancel_response(self) -> None:
         """Stop talking. Sent when the agent starts speaking over our caller.

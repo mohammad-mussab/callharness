@@ -155,6 +155,33 @@ class Settings(BaseSettings):
     testcall_realtime_model: str = "gpt-realtime"
     testcall_realtime_voice: str = "marin"
 
+    # The agents' PHONE_HASH_KEY. They send `from_number` as
+    # HMAC-SHA256(key, E.164 number), so with the key we can compute exactly what our
+    # own caller ID will look like and match a run to its call *by identity*.
+    #
+    # Without it, matching falls back to region-and-time, which is not safe on a busy
+    # line: on 9 Sep 2026 a Trentino test never reached the agent (it was stuck in the
+    # phone menu), and time-matching confidently claimed a real patient's call that
+    # started 40 seconds later — then stamped it for deletion. A run now reports
+    # "could not identify the call" rather than guessing.
+    testcall_phone_hash_key: str | None = None
+
+    # How long the far end must be silent before our caller is allowed to speak.
+    # Responses are NOT generated automatically (see realtime.py): the bridge decides
+    # when the agent's turn is over, because a pause is not the same as a finished turn.
+    # 1500ms was measured — the agents' speech arrives in chunks and shorter windows
+    # split one sentence into several turns.
+    testcall_settle_ms: int = 1500
+
+    # The same, when the agent has just said it is looking something up. Their lookups
+    # take seconds and speaking into one makes them lose their place, so the caller
+    # simply waits instead.
+    testcall_lookup_settle_ms: int = 30000
+
+    # Abort once the same line has come back this many times. A phone menu repeats
+    # itself forever, and without this the run spends its whole budget listening to one.
+    testcall_menu_repeat_limit: int = 3
+
     # Hard cap on how long a test call may last. The caller hangs up at this point
     # whatever is happening. Every second past the answer costs money on both
     # sides — ours in Realtime audio, the customer's in their own STT/LLM/TTS and

@@ -20,6 +20,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 
+from ..config import settings
 from . import realtime as rt
 from .realtime import RealtimeSession
 
@@ -35,6 +36,23 @@ logger = logging.getLogger("callharness.testcall.bridge")
 # immediately; a socket that connects and then says nothing must not hold a paid call
 # open, and on a real failure this is what turns a hang into a reported error.
 START_TIMEOUT_SECONDS = 15.0
+
+# Said by the AGENT when it is about to query its database. Our caller must not speak
+# into that gap: on the 27 Aug Lombardia call it answered "va bene, prendo nota" during
+# the lookup, the agent lost its place, said "Bye" and hung up before answering.
+# ("attendi/attenda" = wait; "sto cercando" = I'm searching; "un attimo" = one moment.)
+LOOKUP_MARKERS = (
+    "sto cercando",
+    "sto controllando",
+    "sto verificando",
+    "attendi",
+    "attenda",
+    "un attimo",
+    "qualche secondo",
+    "un momento",
+    "let me check",
+    "one moment",
+)
 
 # Said by OUR caller, not the agent: the point at which the conversation is over and
 # only politeness remains. Deliberately narrow — "grazie" alone appears mid-call all
@@ -75,6 +93,9 @@ class BridgeResult:
     # The caller hung up deliberately, which is what a finished call should look like.
     # Distinguished from the duration cap because the cap means nobody ever stopped.
     caller_hung_up: bool = False
+    # We never got past a phone menu — the far end repeated itself and no conversation
+    # happened. A finding about the number and its keypad options, not about the agent.
+    stuck_in_menu: bool = False
     error: str | None = None
     stream_sid: str | None = None
 
@@ -110,6 +131,20 @@ async def run_bridge(
     # Set once our caller says goodbye; a one-element list because the pumps are
     # closures and this has to be writable from one and readable from another.
     farewell_deadline: list[float | None] = [None]
+
+    # --- whose turn it is -------------------------------------------------------
+    # The caller speaks ONLY when this deadline passes, which is the whole of the
+    # turn-taking policy:
+    #   the agent starts speaking     -> clear it (never talk over them)
+    #   the agent stops speaking      -> set it to now + settle
+    #   the agent said "hold on"      -> set it much further out instead
+    # A pause is not a finished turn, which is why a timer and not an event.
+    speak_at: list[float | None] = [None]
+    agent_speaking = [False]
+    # How many times each agent line has been heard, for the phone-menu guard.
+    heard: dict[str, int] = {}
+    settle = settings.testcall_settle_ms / 1000
+    lookup_settle = settings.testcall_lookup_settle_ms / 1000
 
     async def pump_twilio_to_model() -> None:
         """Caller audio in, plus the stream lifecycle."""
@@ -167,9 +202,12 @@ async def run_bridge(
                     continue
 
                 if kind == "input_audio_buffer.speech_started":
-                    # The agent started talking. Drop what Twilio has queued, or the two
-                    # of them talk over each other for as long as the buffered audio
-                    # lasts. Only cancel a response that is actually running.
+                    # The agent started talking. Our caller's turn is off — whether it
+                    # was pending or already under way. Dropping Twilio's queued audio
+                    # matters as much as cancelling: without it they talk over each
+                    # other for as long as the buffer lasts.
+                    agent_speaking[0] = True
+                    speak_at[0] = None
                     if result.stream_sid:
                         await websocket.send_text(
                             json.dumps({"event": "clear", "streamSid": result.stream_sid})
@@ -177,6 +215,14 @@ async def run_bridge(
                     if responding:
                         await session.cancel_response()
                         responding = False
+                    continue
+
+                if kind == "input_audio_buffer.speech_stopped":
+                    # They have paused. That is not the same as being finished, so the
+                    # caller waits out the settle window and speaks only if the silence
+                    # holds. Any new speech clears this again, above.
+                    agent_speaking[0] = False
+                    speak_at[0] = time.monotonic() + settle
                     continue
 
                 if rt.wants_to_hang_up(event):
@@ -189,6 +235,26 @@ async def run_bridge(
                 if line:
                     speaker, text = line
                     result.transcript.append({"speaker": speaker, "text": text})
+                    if speaker == "agent":
+                        if _is_lookup(text):
+                            # "Attendi qualche secondo, che sto cercando." Speaking into
+                            # a database lookup is what killed the 27 Aug call, so the
+                            # caller simply waits instead of counting a normal pause.
+                            speak_at[0] = time.monotonic() + lookup_settle
+                            logger.info("Agent is looking something up — caller waiting")
+
+                        key = _normalize(text)
+                        if key:
+                            heard[key] = heard.get(key, 0) + 1
+                            if heard[key] >= settings.testcall_menu_repeat_limit:
+                                # A phone menu repeats forever. Without this the run
+                                # spends its entire budget listening to one and then
+                                # blames the agent for not answering.
+                                logger.info("Test call ending: stuck in a phone menu")
+                                result.stuck_in_menu = True
+                                stop.set()
+                                break
+
                     if speaker == "agent" and _is_transfer(text):
                         logger.info("Test call ending early: agent announced a transfer")
                         result.ended_on_transfer = True
@@ -219,7 +285,7 @@ async def run_bridge(
         stop.set()
 
     async def enforce_deadline() -> None:
-        """The spend limit, and the goodbye backstop."""
+        """Hands the caller its turn, and holds the two end-of-call limits."""
         while not stop.is_set():
             now = time.monotonic()
             if now >= deadline:
@@ -232,8 +298,20 @@ async def run_bridge(
                 result.caller_hung_up = True
                 stop.set()
                 return
+
+            # The caller's turn. Nothing else in the system makes it speak, so this is
+            # the single place the policy lives: the far end has finished, has stayed
+            # finished for the settle window, and is not mid-lookup.
+            turn = speak_at[0]
+            if turn is not None and now >= turn and not agent_speaking[0]:
+                speak_at[0] = None
+                try:
+                    await session.create_response()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Could not ask the caller to speak: %s", exc)
+
             try:
-                await asyncio.wait_for(stop.wait(), timeout=1.0)
+                await asyncio.wait_for(stop.wait(), timeout=0.2)
             except asyncio.TimeoutError:
                 pass
 
@@ -305,3 +383,20 @@ def _is_transfer(text: str) -> bool:
 def _is_farewell(text: str) -> bool:
     lowered = text.lower()
     return any(marker in lowered for marker in FAREWELL_MARKERS)
+
+
+def _is_lookup(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker in lowered for marker in LOOKUP_MARKERS)
+
+
+def _normalize(text: str) -> str:
+    """A line reduced to the part worth comparing, for the phone-menu guard.
+
+    Punctuation and case go because the same recorded prompt comes back transcribed
+    slightly differently each time ("Digita 1." / "Digita 1" / "digita uno"), and very
+    short lines are ignored because "Sì" or "Prego" repeating is not a menu.
+    """
+    cleaned = "".join(c for c in text.lower() if c.isalnum() or c.isspace())
+    cleaned = " ".join(cleaned.split())
+    return cleaned if len(cleaned) >= 12 else ""

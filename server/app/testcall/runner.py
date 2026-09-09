@@ -24,7 +24,7 @@ from ..config import settings
 from ..db import SessionLocal
 from ..models import Call, TestRun, TestScenario, utcnow
 from ..storage import delete_recording
-from . import twilio
+from . import caller_id, twilio
 from .bridge import BridgeResult
 
 logger = logging.getLogger("callharness.testcall.runner")
@@ -258,6 +258,23 @@ async def finish_run(run_id: str, result: BridgeResult) -> None:
             await session.commit()
             _release(run_id)
             return
+
+        if result.stuck_in_menu:
+            # The phone menu answered and kept repeating; the agent was never reached.
+            # "error", not "fail", for the reason the whole third verdict exists: the
+            # agent did not get a chance to be wrong, and grading it would send someone
+            # to debug the wrong system. It is a fact about the number and its keypad
+            # options — which is what the message has to say.
+            run.status = "failed"
+            run.verdict = "error"
+            run.verdict_reason = (
+                "Never got past the phone menu — it repeated itself and the agent was "
+                "never reached. Check the scenario's menu keys against what the "
+                "recording actually offers."
+            )
+            await session.commit()
+            _release(run_id)
+            return
         run.status = "talking"
         await session.commit()
 
@@ -307,14 +324,30 @@ async def cancel_run(run: TestRun) -> None:
 async def _await_matching_call(run_id: str) -> Call | None:
     """Find the row the production agent posted for the call we just made.
 
-    Matched on region and time, not on caller number: the agents hash `from_number`
-    before sending it, so the number we dialled from is not visible here. Nearest start
-    time wins, the same tiebreak `azure_logs.resolve()` uses for the same reason — the
-    window can legitimately contain more than one call.
+    Matched on the **caller's identity**, not on timing. The agents hash `from_number`,
+    so we hash our own Twilio number the same way (`caller_id.py`) and look for that
+    exact value inside the run's time window.
 
-    A row already claimed by another run is never taken, so a burst of tests cannot all
-    point at the same call.
+    It used to match on region and time alone, and that was unsafe on a line with real
+    traffic. On 9 Sep 2026 a Trentino test never reached the agent — it was stuck in the
+    phone menu, so no row for it existed — and the nearest call in the window was a real
+    patient asking for an operator forty seconds later. It was claimed, stamped as a
+    test call and scheduled for deletion. Nearest-start cannot save you when the right
+    answer is "none of these".
+
+    With no hash key configured there is no safe fallback, so nothing is matched and the
+    run says so. A row already claimed by another run is never taken.
     """
+    expected = caller_id.phone_hash(
+        settings.twilio_from_number, settings.testcall_phone_hash_key
+    )
+    if not expected:
+        logger.warning(
+            "No CALLHARNESS_TESTCALL_PHONE_HASH_KEY (or unusable from-number): a test "
+            "run cannot identify its own call and will not guess."
+        )
+        return None
+
     deadline = asyncio.get_event_loop().time() + MATCH_TIMEOUT_SECONDS
     while True:
         async with SessionLocal() as session:
@@ -336,6 +369,7 @@ async def _await_matching_call(run_id: str) -> Call | None:
                         select(Call)
                         .options(selectinload(Call.turns))
                         .where(Call.agent_id == run.agent_id)
+                        .where(Call.from_number == expected)
                         .where(Call.started_at >= run.started_at - MATCH_BEFORE)
                         .where(Call.started_at <= (run.ended_at or utcnow()) + MATCH_AFTER)
                     )
@@ -345,6 +379,8 @@ async def _await_matching_call(run_id: str) -> Call | None:
             )
             fresh = [c for c in candidates if c.id not in claimed]
             if fresh:
+                # The window can hold two of our own calls if tests run back to back;
+                # nearest start is the tiebreak, as in azure_logs.resolve().
                 return min(fresh, key=lambda c: abs((c.started_at - run.started_at).total_seconds()))
         if asyncio.get_event_loop().time() >= deadline:
             return None

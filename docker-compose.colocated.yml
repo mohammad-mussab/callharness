@@ -74,6 +74,12 @@ services:
       # How long a synthetic call stays in the call history before it is deleted, so a
       # robot's question can never reach the customer's missing-records report as work.
       CALLHARNESS_TESTCALL_TTL_HOURS: ${CALLHARNESS_TESTCALL_TTL_HOURS:-3}
+      # The agents' PHONE_HASH_KEY, so a run recognises its own call by the hashed
+      # caller id rather than by timing. Without it a run matches nothing at all, and
+      # that is deliberate — guessing from timing once claimed a real patient's call
+      # and scheduled it for deletion. The bare name is accepted too, since the agent
+      # on this VM already exports it.
+      CALLHARNESS_TESTCALL_PHONE_HASH_KEY: ${CALLHARNESS_TESTCALL_PHONE_HASH_KEY:-${PHONE_HASH_KEY:-}}
     volumes:
       - calls_data:/data
     ports:

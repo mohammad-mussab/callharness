@@ -37,6 +37,9 @@ services:
       CALLHARNESS_TWILIO_FROM_NUMBER: ${CALLHARNESS_TWILIO_FROM_NUMBER:-${TWILIO_PHONE_NUMBER:-}}
       CALLHARNESS_TESTCALL_STREAM_URL: ${CALLHARNESS_TESTCALL_STREAM_URL:-}
       CALLHARNESS_TESTCALL_TTL_HOURS: ${CALLHARNESS_TESTCALL_TTL_HOURS:-3}
+      # The agents' PHONE_HASH_KEY. A run identifies its own call by the hashed caller
+      # id; without this it matches nothing rather than guessing from timing.
+      CALLHARNESS_TESTCALL_PHONE_HASH_KEY: ${CALLHARNESS_TESTCALL_PHONE_HASH_KEY:-${PHONE_HASH_KEY:-}}
     volumes:
       - calls_data:/data
     ports:

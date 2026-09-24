@@ -25,6 +25,129 @@ const selectClass =
 // kind of attention (or none at all).
 const OPEN_STATUSES = ["not_verified", "confirmed_missing", "verify_error"];
 
+// PAGING IS A RENDERING CONCERN HERE, NOT A QUERY ONE.
+//
+// The request already brings the whole matched list back (limit=2000) and everything on
+// this page that states a number — the tiles, the "showing N of M" cap notice, the copied
+// report, "Verify unchecked (n)" — counts that whole set. Asking the server for 50 rows
+// at a time would make every one of those numbers describe the visible page instead,
+// which is precisely the class of bug that once let 133 proven-missing records look like
+// they did not exist. So the fetch is unchanged and only the rendering is cut up.
+const PAGE_SIZES = [25, 50, 100, 250];
+
+function usePage<T>(rows: T[], resetKey: string) {
+  const [size, setSize] = useState(50);
+  const [page, setPage] = useState(1);
+  const pages = Math.max(1, Math.ceil(rows.length / size));
+
+  // The view, the window, the region and the page size all change what `rows` is.
+  // Staying on page 7 of a list that now has two would show an empty list, which reads as
+  // "the records are gone" rather than "you are past the end".
+  useEffect(() => setPage(1), [resetKey, size]);
+
+  // Clamped rather than corrected in state: a row deleted or re-filed between renders
+  // shrinks the list without any of the keys above changing.
+  const current = Math.min(page, pages);
+  const start = (current - 1) * size;
+  return {
+    slice: rows.slice(start, start + size),
+    start,
+    page: current,
+    pages,
+    setPage,
+    size,
+    setSize,
+    total: rows.length,
+  };
+}
+
+/** Page numbers with the ends always reachable: 1 … 6 [7] 8 … 42. */
+function pageNumbers(page: number, pages: number): (number | "gap")[] {
+  if (pages <= 7) return Array.from({ length: pages }, (_, i) => i + 1);
+  const around = [page - 1, page, page + 1].filter((n) => n > 1 && n < pages);
+  const out: (number | "gap")[] = [1];
+  if (around[0] > 2) out.push("gap");
+  out.push(...around);
+  if (around[around.length - 1] < pages - 1) out.push("gap");
+  out.push(pages);
+  return out;
+}
+
+function Pager({
+  page,
+  pages,
+  total,
+  size,
+  start,
+  setPage,
+  setSize,
+}: {
+  page: number;
+  pages: number;
+  total: number;
+  size: number;
+  start: number;
+  setPage: (n: number) => void;
+  setSize: (n: number) => void;
+}) {
+  // One page of rows needs no controls, but the page-size selector still does once the
+  // list is near the boundary — otherwise a 60-row list at size 100 offers no way back
+  // down to 25.
+  if (total <= PAGE_SIZES[0]) return null;
+  const btn =
+    "rounded-md border border-zinc-800 px-2 py-1 text-xs text-zinc-400 hover:border-zinc-700 hover:text-zinc-200 disabled:cursor-not-allowed disabled:opacity-40";
+  return (
+    <div className="flex flex-wrap items-center gap-2 pt-1 text-xs text-zinc-500">
+      <span className="tabular-nums">
+        {start + 1}–{Math.min(start + size, total)} of {total}
+      </span>
+      <div className="ml-auto flex flex-wrap items-center gap-1">
+        <button className={btn} onClick={() => setPage(page - 1)} disabled={page <= 1}>
+          ‹ Prev
+        </button>
+        {pageNumbers(page, pages).map((n, i) =>
+          n === "gap" ? (
+            <span key={`gap${i}`} className="px-1 text-zinc-700">
+              …
+            </span>
+          ) : (
+            <button
+              key={n}
+              onClick={() => setPage(n)}
+              className={
+                n === page
+                  ? "rounded-md border border-indigo-700 bg-indigo-500/15 px-2 py-1 text-xs tabular-nums text-indigo-300"
+                  : `${btn} tabular-nums`
+              }
+            >
+              {n}
+            </button>
+          )
+        )}
+        <button
+          className={btn}
+          onClick={() => setPage(page + 1)}
+          disabled={page >= pages}
+        >
+          Next ›
+        </button>
+        <select
+          value={size}
+          onChange={(e) => setSize(Number(e.target.value))}
+          className="ml-1 rounded-md border border-zinc-800 bg-zinc-900 px-1.5 py-1 text-xs text-zinc-400"
+          title="Rows per page"
+        >
+          {PAGE_SIZES.map((n) => (
+            <option key={n} value={n}>
+              {n} / page
+            </option>
+          ))}
+        </select>
+      </div>
+    </div>
+  );
+}
+
 /** Records that go in the email: proved missing against the real lookup API, and not
  *  already reported. The second half is the whole point of the sent batch — a record the
  *  customer is already working on must not reappear on tomorrow's list. */
@@ -211,6 +334,16 @@ export default function GapsPage() {
     : checkable.length === 0 && verifiable.length > 0
       ? "No lookup source is configured for these records' regions. Add one in Analysis Settings."
       : null;
+
+  // One page of rows at a time. Every one of these lists can run to hundreds of records —
+  // 3,760 ungrouped across the three regions at the time of writing — and a single
+  // scroll-forever column makes "which ones have I already looked at" impossible to hold
+  // on to. `pageKey` is everything that changes what the lists contain, so changing the
+  // view or the window starts again at page 1 instead of landing past the end.
+  const pageKey = `${view}|${days}|${agent}|${minCount}`;
+  const openPage = usePage(open, pageKey);
+  const filteredPage = usePage(groups, pageKey);
+  const reviewPage = usePage(data?.needs_review ?? [], pageKey);
 
   // The server handles a bounded batch per request — a reasoning model over every
   // ungrouped question at once is slow enough to time out, and a reply that long can come
@@ -758,21 +891,24 @@ export default function GapsPage() {
                   No records have this status.
                 </div>
               ) : (
-                <ol className="space-y-2">
-                  {groups.map((g, i) => (
-                    <GapRow
-                      key={g.group_id ?? g.examples[0]?.call_id ?? i}
-                      gap={g}
-                      index={i}
-                      busy={verifyingOne === g.group_id}
-                      disabled={running || verifyingOne !== null}
-                      backendReady={backendHasVerification}
-                      onUngroup={ungroup}
-                      onVerify={verifyOne}
-                      onStatus={setStatus}
-                    />
-                  ))}
-                </ol>
+                <>
+                  <ol className="space-y-2">
+                    {filteredPage.slice.map((g, i) => (
+                      <GapRow
+                        key={g.group_id ?? g.examples[0]?.call_id ?? i}
+                        gap={g}
+                        index={filteredPage.start + i}
+                        busy={verifyingOne === g.group_id}
+                        disabled={running || verifyingOne !== null}
+                        backendReady={backendHasVerification}
+                        onUngroup={ungroup}
+                        onVerify={verifyOne}
+                        onStatus={setStatus}
+                      />
+                    ))}
+                  </ol>
+                  <Pager {...filteredPage} />
+                </>
               )}
             </div>
           )}
@@ -782,21 +918,24 @@ export default function GapsPage() {
               Nothing left to check or report in this window.
             </div>
           ) : (
-            <ol className="space-y-2">
-              {open.map((g, i) => (
-                <GapRow
-                  key={g.group_id ?? g.examples[0]?.call_id ?? i}
-                  gap={g}
-                  index={i}
-                  busy={verifyingOne === g.group_id}
-                  disabled={running || verifyingOne !== null}
-                  backendReady={backendHasVerification}
-                  onUngroup={ungroup}
-                  onVerify={verifyOne}
-                  onStatus={setStatus}
-                />
-              ))}
-            </ol>
+            <>
+              <ol className="space-y-2">
+                {openPage.slice.map((g, i) => (
+                  <GapRow
+                    key={g.group_id ?? g.examples[0]?.call_id ?? i}
+                    gap={g}
+                    index={openPage.start + i}
+                    busy={verifyingOne === g.group_id}
+                    disabled={running || verifyingOne !== null}
+                    backendReady={backendHasVerification}
+                    onUngroup={ungroup}
+                    onVerify={verifyOne}
+                    onStatus={setStatus}
+                  />
+                ))}
+              </ol>
+              <Pager {...openPage} />
+            </>
           ))}
 
           {!filtered && (
@@ -869,7 +1008,7 @@ export default function GapsPage() {
                 </p>
               </div>
               <ul className="space-y-1.5">
-                {data.needs_review.map((g, i) => (
+                {reviewPage.slice.map((g, i) => (
                   <li
                     key={g.examples[0]?.call_id ?? i}
                     className="rounded-lg border border-zinc-800/80 bg-zinc-900/40 p-3"
@@ -890,6 +1029,7 @@ export default function GapsPage() {
                   </li>
                 ))}
               </ul>
+              <Pager {...reviewPage} />
             </div>
           )}
         </>
@@ -918,6 +1058,9 @@ function GapSection({
   onStatus: (id: string, status: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  // Before the early return: hooks cannot be called conditionally, and "Sent — waiting on
+  // the customer" is the section that grows without bound as batches go out.
+  const paged = usePage(rows, title);
   if (rows.length === 0) return null;
   return (
     <div className="space-y-2 pt-2">
@@ -934,11 +1077,11 @@ function GapSection({
         <>
           <p className="max-w-3xl text-xs text-zinc-500">{blurb}</p>
           <ol className="space-y-2">
-            {rows.map((g, i) => (
+            {paged.slice.map((g, i) => (
               <GapRow
                 key={g.group_id ?? g.examples[0]?.call_id ?? i}
                 gap={g}
-                index={i}
+                index={paged.start + i}
                 busy={handlers.busy === g.group_id}
                 disabled={handlers.disabled}
                 backendReady={handlers.backendReady}
@@ -948,6 +1091,7 @@ function GapSection({
               />
             ))}
           </ol>
+          <Pager {...paged} />
         </>
       )}
     </div>

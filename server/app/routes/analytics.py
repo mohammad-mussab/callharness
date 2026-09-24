@@ -389,9 +389,11 @@ async def group_knowledge_gaps(
     existing record instead of starting a duplicate of it. Already-grouped calls are
     never re-judged — undoing a bad merge is what DELETE ./group/{id} is for.
 
-    Existing groups are collected across the WHOLE database rather than the requested
+    Existing groups are collected across the WHOLE date range rather than the requested
     window. Scoping them to the window would hide a group whose calls are all older than
-    `days` and let the model create a second group for the same record.
+    `days` and let the model create a second group for the same record. They ARE scoped to
+    `agent_id` when one is given: a record belongs to one region's knowledge base, so
+    another region's canonicals can never be a valid merge target for these questions.
 
     Refuses to run alongside another pass — see `_grouping_lock`. Rejecting is better than
     queueing here: a pass takes minutes, so a queued request would hold the connection
@@ -436,17 +438,30 @@ async def _run_grouping_pass(
         )
         by_item_id[index] = call
 
-    existing_rows = (
-        await session.execute(
-            select(Call.gap_group_id, Call.gap_group_question)
-            .where(
-                Call.gap_group_id.is_not(None),
-                Call.gap_group_id != GAP_NEEDS_REVIEW,
-                Call.gap_group_question.is_not(None),
-            )
-            .distinct()
+    existing_query = (
+        select(Call.gap_group_id, Call.gap_group_question)
+        .where(
+            Call.gap_group_id.is_not(None),
+            Call.gap_group_id != GAP_NEEDS_REVIEW,
+            Call.gap_group_question.is_not(None),
         )
-    ).all()
+        .distinct()
+    )
+    # SCOPED TO THE REGION BEING GROUPED, unlike the window above, which is scoped by both
+    # region and date.
+    #
+    # A record is a row in ONE region's knowledge base. "orari della sede di Acilia" is a
+    # Roman branch and "orari sede Trento centro" is a different company's database
+    # entirely, so the two can never be one record and offering either as a merge target
+    # for the other is only noise. Left unfiltered, a Lazio pass carried every Lombardia
+    # and Trentino canonical as well — and that list is already the largest part of this
+    # prompt, which is what makes long runs slow, expensive and prone to timing out.
+    #
+    # Deliberately NOT date-scoped, for the reason the docstring gives: a group whose
+    # calls are all older than `days` would become invisible and get duplicated.
+    if agent_id:
+        existing_query = existing_query.where(Call.agent_id == agent_id)
+    existing_rows = (await session.execute(existing_query)).all()
     existing = [{"group_id": g, "question": q} for g, q in existing_rows]
 
     assigned, warnings = await group_gaps(items, existing)

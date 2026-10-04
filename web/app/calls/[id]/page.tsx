@@ -1,9 +1,10 @@
 "use client";
 
-import { use, useRef, useState } from "react";
+import { use, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
 import { fetcher, textFetcher, type CallDetail } from "@/lib/api";
+import { callsListHref } from "@/lib/callsList";
 import { formatClock, formatDate, formatDuration, titleCase } from "@/lib/format";
 import {
   BucketBadge,
@@ -26,6 +27,9 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
 
 export default function CallDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
+  // Read after mount: sessionStorage does not exist during server rendering.
+  const [backHref, setBackHref] = useState("/calls");
+  useEffect(() => setBackHref(callsListHref()), []);
   const { data: call, mutate } = useSWR<CallDetail>(`/api/v1/calls/${id}`, fetcher, {
     refreshInterval: (data) =>
       data && ["pending", "processing"].includes(data.analysis_status) ? 3000 : 0,
@@ -116,7 +120,7 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
     <div className="mx-auto max-w-6xl space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <Link href="/calls" className="text-sm text-zinc-500 hover:text-zinc-300">
+          <Link href={backHref} className="text-sm text-zinc-500 hover:text-zinc-300">
             ← Calls
           </Link>
           <h1 className="mt-1 text-xl font-semibold text-zinc-100">

@@ -21,6 +21,7 @@ const PAGE_SIZE = 25;
 // "last 24 hours" view still means the last 24 hours when reopened tomorrow.
 const RANGE_PRESETS: Record<string, number> = {
   "1h": 60 * 60 * 1000,
+  "3h": 3 * 60 * 60 * 1000,
   "24h": 24 * 60 * 60 * 1000,
   "7d": 7 * 24 * 60 * 60 * 1000,
   "30d": 30 * 24 * 60 * 60 * 1000,
@@ -29,6 +30,7 @@ const RANGE_PRESETS: Record<string, number> = {
 const RANGE_OPTIONS = [
   { value: "", label: "All time" },
   { value: "1h", label: "Last hour" },
+  { value: "3h", label: "Last 3 hours" },
   { value: "24h", label: "Last 24 hours" },
   { value: "7d", label: "Last 7 days" },
   { value: "30d", label: "Last 30 days" },

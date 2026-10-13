@@ -187,7 +187,7 @@ function CallsList() {
   const sectionLabel = "text-xs font-medium uppercase tracking-wide text-zinc-500";
 
   return (
-    <div className="mx-auto max-w-6xl space-y-4">
+    <div className="mx-auto max-w-7xl space-y-4">
       <div>
         <h1 className="text-xl font-semibold text-zinc-100">Calls</h1>
         <p className="text-sm text-zinc-500">
@@ -422,7 +422,7 @@ function CallsList() {
           </thead>
           <tbody className="divide-y divide-zinc-800/70">
             {data?.items.map((call) => (
-              <tr key={call.id} className="group hover:bg-zinc-900/70">
+              <tr key={call.id} className="group align-top hover:bg-zinc-900/70">
                 <td className="whitespace-nowrap px-4 py-2.5">
                   <Link href={`/calls/${call.id}`} className="text-indigo-400 group-hover:underline">
                     {formatDate(call.started_at)}
@@ -449,7 +449,7 @@ function CallsList() {
                 <td className="whitespace-nowrap px-4 py-2.5">
                   <SentimentBadge label={call.sentiment_label} />
                 </td>
-                <td className="max-w-md truncate px-4 py-2.5 text-zinc-400">
+                <td className="min-w-[24rem] px-4 py-2.5 leading-snug text-zinc-300">
                   {call.summary ?? <span className="text-zinc-600">No summary</span>}
                 </td>
               </tr>

@@ -100,6 +100,15 @@ function CallsList() {
   const page = Math.max(0, Number(searchParams.get("page") ?? "1") - 1) || 0;
 
   const [q, setQ] = useState(search);
+  // Summaries show as one line; clicking one opens it in place.
+  const [openSummaries, setOpenSummaries] = useState<Set<string>>(new Set());
+  const toggleSummary = (id: string) =>
+    setOpenSummaries((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   useEffect(() => setQ(search), [search]);
 
   const queryString = searchParams.toString();
@@ -449,8 +458,44 @@ function CallsList() {
                 <td className="whitespace-nowrap px-4 py-2.5">
                   <SentimentBadge label={call.sentiment_label} />
                 </td>
-                <td className="min-w-[24rem] px-4 py-2.5 leading-snug text-zinc-300">
-                  {call.summary ?? <span className="text-zinc-600">No summary</span>}
+                <td className="w-full max-w-0 px-4 py-2 text-zinc-300">
+                  {call.summary ? (
+                    <button
+                      type="button"
+                      onClick={() => toggleSummary(call.id)}
+                      aria-expanded={openSummaries.has(call.id)}
+                      title={openSummaries.has(call.id) ? "Hide full summary" : "Show full summary"}
+                      className={`group/summary flex w-full min-w-[16rem] items-start gap-2 rounded-md px-2 py-0.5 text-left transition-colors hover:bg-zinc-800/70 ${
+                        openSummaries.has(call.id) ? "bg-zinc-800/50" : ""
+                      }`}
+                    >
+                      <span
+                        className={`min-w-0 flex-1 leading-relaxed ${
+                          openSummaries.has(call.id) ? "whitespace-normal text-zinc-200" : "truncate"
+                        }`}
+                      >
+                        {call.summary}
+                      </span>
+                      <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded border border-zinc-700 bg-zinc-900 text-zinc-500 transition-colors group-hover/summary:border-indigo-500/60 group-hover/summary:text-indigo-300">
+                        <svg
+                          viewBox="0 0 20 20"
+                          fill="currentColor"
+                          aria-hidden
+                          className={`h-3.5 w-3.5 transition-transform duration-200 ${
+                            openSummaries.has(call.id) ? "rotate-180" : ""
+                          }`}
+                        >
+                          <path
+                            fillRule="evenodd"
+                            d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.17l3.71-3.94a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z"
+                            clipRule="evenodd"
+                          />
+                        </svg>
+                      </span>
+                    </button>
+                  ) : (
+                    <span className="px-2 text-zinc-600">No summary</span>
+                  )}
                 </td>
               </tr>
             ))}
